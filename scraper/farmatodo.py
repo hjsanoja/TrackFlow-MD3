@@ -112,39 +112,166 @@ def scrape_url(page, url, marca):
                 result["error"] = "HTTP " + str(response.status)
                 return result
         except PlaywrightTimeout:
-            result["error"] = "Timeout cargando la pagina"
+            result["error"] = "Timeout cargando la página"
             return result
 
         print("   Esperando contenido...", flush=True)
         try:
-            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_selector("h1", timeout=12000)
         except PlaywrightTimeout:
             pass
-        time.sleep(2)
+
+        # Desplazamiento sutil para gatillar la hidratación de React/NextJS
+        try:
+            page.evaluate("window.scrollTo(0, 300)")
+            time.sleep(1.0)
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(1.5)
+        except Exception:
+            pass
 
         print("   Extrayendo datos...", flush=True)
         data = page.evaluate("""
             () => {
-                const active = document.querySelector('span.product-purchase__price--active') || 
-                               document.querySelector('[class*="price--active"]') ||
-                               document.querySelector('.product-purchase__price');
-                const original = document.querySelector('del.product-purchase__price--original') ||
-                                 document.querySelector('del') ||
-                                 document.querySelector('[class*="price--original"]') ||
-                                 document.querySelector('.product-purchase__price-original');
-                const h1 = document.querySelector('h1');
+                // 1. Detectar bloqueo o Cloudflare
+                const bodyText = document.body ? document.body.innerText || '' : '';
+                const title = document.title || '';
+                const isCloudflare = title.includes('Cloudflare') || 
+                                     title.includes('Just a moment') || 
+                                     bodyText.includes('Checking your browser') ||
+                                     bodyText.includes('Access Denied') ||
+                                     bodyText.includes('enable JavaScript') ||
+                                     bodyText.includes('Attention Required!');
+                if (isCloudflare) {
+                    return {
+                        error: "La página bloqueó el acceso temporalmente (Sistema de seguridad Cloudflare / Protección contra Robots). Intenta de nuevo en unos minutos."
+                    };
+                }
+
+                // 2. Extraer H1 (nombre del producto)
+                const h1El = document.querySelector('h1');
+                const nombre = h1El ? (h1El.innerText || h1El.textContent || '').trim() : null;
+
+                // Detectar si el producto no está disponible o el enlace está roto
+                const isNotFound = title.includes('404') || 
+                                   bodyText.includes('Producto no disponible') || 
+                                   bodyText.includes('No pudimos encontrar') ||
+                                   bodyText.includes('no encontrado') ||
+                                   (nombre && nombre.toLowerCase().includes('no encontrado'));
+                if (isNotFound) {
+                    return {
+                        nombre,
+                        error: "Producto no disponible o enlace roto (404 / Agotado)."
+                    };
+                }
+
+                // 3. Extraer precios usando metadatos robustos
+                let metaActive = null;
+
+                // Intentar con JSON-LD (datos estructurados de Schema.org)
+                const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                for (const script of jsonLdScripts) {
+                    try {
+                        const parsed = JSON.parse(script.textContent || '');
+                        const findProductPrice = (obj) => {
+                            if (!obj) return null;
+                            if (obj['@type'] === 'Product' || obj['@type'] === 'http://schema.org/Product') {
+                                if (obj.offers) {
+                                    if (Array.isArray(obj.offers)) {
+                                        return obj.offers[0].price || obj.offers[0].lowPrice;
+                                    } else if (obj.offers.price) {
+                                        return obj.offers.price;
+                                    } else if (obj.offers.lowPrice) {
+                                        return obj.offers.lowPrice;
+                                    }
+                                }
+                            }
+                            if (Array.isArray(obj)) {
+                                for (const item of obj) {
+                                    const p = findProductPrice(item);
+                                    if (p) return p;
+                                }
+                            } else if (typeof obj === 'object') {
+                                for (const key of Object.keys(obj)) {
+                                    const p = findProductPrice(obj[key]);
+                                    if (p) return p;
+                                }
+                            }
+                            return null;
+                        };
+                        const p = findProductPrice(parsed);
+                        if (p) {
+                            metaActive = String(p);
+                            break;
+                        }
+                    } catch(e) {}
+                }
+
+                // Intentar con etiquetas meta de precio
+                if (!metaActive) {
+                    const metaPriceAmount = document.querySelector('meta[property="product:price:amount"]') || 
+                                            document.querySelector('meta[property="og:price:amount"]') ||
+                                            document.querySelector('meta[itemprop="price"]');
+                    if (metaPriceAmount) {
+                        metaActive = metaPriceAmount.getAttribute('content');
+                    }
+                }
+
+                // 4. Selectores DOM (para precio activo y original con descuento)
+                const activeSelectors = [
+                    'span.product-purchase__price--active',
+                    '[class*="price--active"]',
+                    '.product-purchase__price',
+                    'span.price',
+                    '[class*="product-price"]',
+                    '[class*="price_active"]'
+                ];
                 
-                let active_text = active ? (active.innerText || active.textContent || '').trim() : null;
-                let original_text = original ? (original.innerText || original.textContent || '').trim() : null;
-                
-                // Fallback robust check: if original price is not found but there are multiple price elements
-                if (!original_text && active) {
-                    const container = active.closest('.product-purchase__price-container') || active.parentElement;
+                const originalSelectors = [
+                    'del.product-purchase__price--original',
+                    'del',
+                    '[class*="price--original"]',
+                    '.product-purchase__price-original',
+                    '[class*="price_original"]',
+                    'span.product-purchase__price-original'
+                ];
+
+                let activeEl = null;
+                for (const sel of activeSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        activeEl = el;
+                        break;
+                    }
+                }
+
+                let originalEl = null;
+                for (const sel of originalSelectors) {
+                    const el = document.querySelector(sel);
+                    if (el) {
+                        originalEl = el;
+                        break;
+                    }
+                }
+
+                let active_text = activeEl ? (activeEl.innerText || activeEl.textContent || '').trim() : null;
+                let original_text = originalEl ? (originalEl.innerText || originalEl.textContent || '').trim() : null;
+
+                // Usar metadato activo si el DOM no devolvió nada
+                if (!active_text && metaActive) {
+                    active_text = metaActive;
+                }
+
+                // Búsqueda de respaldo si hay descuento pero no se obtuvo etiqueta del precio original
+                if (!original_text && activeEl) {
+                    const container = activeEl.closest('.product-purchase__price-container') || 
+                                      activeEl.closest('[class*="price-container"]') || 
+                                      activeEl.parentElement;
                     if (container) {
                         const allText = (container.innerText || container.textContent || '');
                         const prices = allText.match(/Bs\.?\s*[\d.,]+/g) || [];
                         if (prices.length > 1) {
-                            const activeClean = active_text.replace(/[^\d]/g, '');
+                            const activeClean = (active_text || '').replace(/[^\d]/g, '');
                             for (const p of prices) {
                                 const pClean = p.replace(/[^\d]/g, '');
                                 if (activeClean && pClean !== activeClean) {
@@ -155,27 +282,39 @@ def scrape_url(page, url, marca):
                         }
                     }
                 }
-                
+
                 return {
                     active_text: active_text,
                     original_text: original_text,
-                    nombre: h1 ? (h1.innerText || h1.textContent || '').trim() : null,
+                    nombre: nombre,
                 };
             }
         """)
+
+        if data.get("error"):
+            result["error"] = data["error"]
+            result["nombre"] = data.get("nombre")
+            return result
 
         result["nombre"] = data.get("nombre")
         precio_activo = parse_price(data.get("active_text"))
         precio_original = parse_price(data.get("original_text"))
 
         if precio_original is not None and precio_activo is not None:
-            result["precio_full_bs"] = precio_original
-            result["precio_desc_bs"] = precio_activo
-            result["tiene_descuento"] = True
+            # Si se obtuvo original y activo, y son diferentes, hay descuento
+            if precio_original > precio_activo:
+                result["precio_full_bs"] = precio_original
+                result["precio_desc_bs"] = precio_activo
+                result["tiene_descuento"] = True
+            else:
+                result["precio_full_bs"] = precio_activo
         elif precio_activo is not None:
             result["precio_full_bs"] = precio_activo
         else:
-            result["error"] = "Precio no encontrado en la pagina"
+            if not result.get("nombre"):
+                result["error"] = "No se pudo cargar la estructura de la página (posible bloqueo de IP por seguridad o error de red)."
+            else:
+                result["error"] = "Precio no encontrado en la página (el producto podría estar agotado o requiere configurar ubicación)."
 
     except PlaywrightTimeout as e:
         result["error"] = "Timeout: " + str(e)

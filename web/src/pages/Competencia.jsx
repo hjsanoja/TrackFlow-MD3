@@ -430,6 +430,12 @@ export default function Competencia() {
                         <span>Ver Enlace Destino</span>
                         <span className="material-symbols-outlined text-[11px] leading-none">open_in_new</span>
                       </a>
+                      {it.estado === 'error' && it.ultimo_error && (
+                        <div className="text-[10px] text-error bg-error/5 border border-error/15 px-2 py-1 rounded-xl mt-1.5 font-medium max-w-xs leading-normal flex items-start gap-1 shadow-sm">
+                          <span className="material-symbols-outlined text-[12px] mt-0.5 flex-shrink-0 text-error leading-none">warning</span>
+                          <span><strong>Error lectura:</strong> {it.ultimo_error}</span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className={`text-[10px] uppercase font-mono font-bold px-2.5 py-1 rounded-full border ${

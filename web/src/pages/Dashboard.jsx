@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { collection, getDocs, query, orderBy, limit, doc, getDoc, writeBatch, deleteDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, doc, getDoc, writeBatch, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useBcvRate } from '../hooks/useBcvRate';
 import ProductDetailModal from '../components/ProductDetailModal';
@@ -23,12 +23,14 @@ export default function Dashboard({ user, userDoc }) {
   const [refreshMessage, setRefreshMessage] = useState(null);
   const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
   const [clearingHistory, setClearingHistory] = useState(false);
+  const [waitingForScraper, setWaitingForScraper] = useState(false);
+  const [scraperTriggerTime, setScraperTriggerTime] = useState(null);
 
   const bcv = useBcvRate();
   const isAdmin = userDoc?.rol === 'administrador';
 
-  const cargarDatos = async () => {
-    setLoading(true);
+  const cargarDatos = async (showSilently = false) => {
+    if (!showSilently) setLoading(true);
     try {
       const [prodSnap, competSnap, runsSnap, bcvSnap] = await Promise.all([
         getDocs(collection(db, 'productos')),
@@ -75,12 +77,38 @@ export default function Dashboard({ user, userDoc }) {
     } catch (err) {
       console.error('Error cargando panel:', err.message || err);
     }
-    setLoading(false);
+    if (!showSilently) setLoading(false);
   };
 
   useEffect(() => {
     cargarDatos();
   }, []);
+
+  // Listener en tiempo real para detectar cuándo termina el scraper
+  useEffect(() => {
+    const q = query(collection(db, 'scrape_runs'), orderBy('started_at', 'desc'), limit(1));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        const docData = snapshot.docs[0].data();
+        const runDate = docData.started_at?.toDate?.() || null;
+        setUltimaCorrida({ ...docData, started_at: runDate });
+        
+        if (waitingForScraper && runDate && scraperTriggerTime && runDate >= scraperTriggerTime) {
+          setWaitingForScraper(false);
+          setScraperTriggerTime(null);
+          setRefreshMessage({
+            type: 'success',
+            text: `¡Actualización completada! El robot ha terminado de extraer y analizar los últimos precios (${docData.ok} exitosos, ${docData.errores} errores).`
+          });
+          cargarDatos(true); // Recargar los datos silenciosamente para actualizar la tabla
+        }
+      }
+    }, (err) => {
+      console.error('Error en onSnapshot de scrape_runs:', err);
+    });
+
+    return () => unsubscribe();
+  }, [waitingForScraper, scraperTriggerTime]);
 
   const handleActualizar = async () => {
     if (!isAdmin) return;
@@ -105,7 +133,9 @@ export default function Dashboard({ user, userDoc }) {
         }
       );
       if (res.status === 204) {
-        setRefreshMessage({ type: 'success', text: 'Scraper disparado correctamente vía GitHub Actions. Se actualizarán los precios en 1-2 minutos.' });
+        setWaitingForScraper(true);
+        setScraperTriggerTime(new Date());
+        setRefreshMessage({ type: 'success', text: 'El robot scraper ha sido iniciado vía GitHub Actions. Se te notificará de forma interactiva en esta misma pantalla cuando finalice la carga de precios.' });
       } else {
         const txt = await res.text();
         throw new Error(`GitHub respondió ${res.status}: ${txt}`);
@@ -410,16 +440,25 @@ export default function Dashboard({ user, userDoc }) {
         {ultimaCorrida && (
           <div className="flex items-center gap-3 text-xs">
             <span className="text-on-surface-variant font-sans font-semibold">Último Análisis Scraper:</span>
-            <span className="font-mono bg-primary text-on-primary px-3 py-1 rounded-full font-bold">
-              {ultimaCorrida.started_at ? formatTimeAgo(ultimaCorrida.started_at) : '—'}
-            </span>
-            <span className="text-on-surface-variant font-semibold">
-              ({ultimaCorrida.ok}/{ultimaCorrida.total} exitosos)
-            </span>
+            {waitingForScraper ? (
+              <span className="inline-flex items-center gap-1.5 font-mono bg-amber-500 text-white px-3.5 py-1.5 rounded-full font-bold animate-pulse">
+                <span className="material-symbols-outlined text-xs animate-spin leading-none">sync</span>
+                Robot Trabajando...
+              </span>
+            ) : (
+              <>
+                <span className="font-mono bg-primary text-on-primary px-3 py-1 rounded-full font-bold">
+                  {ultimaCorrida.started_at ? formatTimeAgo(ultimaCorrida.started_at) : '—'}
+                </span>
+                <span className="text-on-surface-variant font-semibold">
+                  ({ultimaCorrida.ok}/{ultimaCorrida.total} exitosos)
+                </span>
+              </>
+            )}
             {isAdmin && (
-              <button onClick={handleActualizar} disabled={refreshing}
+              <button onClick={handleActualizar} disabled={refreshing || waitingForScraper}
                 className="px-4 py-2 bg-secondary text-on-secondary hover:bg-secondary/90 disabled:opacity-50 font-extrabold uppercase font-mono tracking-wider text-[10px] rounded-full transition-all">
-                {refreshing ? 'Procesando...' : 'Actualizar'}
+                {refreshing ? 'Iniciando...' : waitingForScraper ? 'Ejecutando...' : 'Actualizar'}
               </button>
             )}
           </div>
