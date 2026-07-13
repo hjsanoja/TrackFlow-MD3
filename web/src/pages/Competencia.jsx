@@ -230,6 +230,21 @@ export default function Competencia() {
     const lines = text.split(/\r?\n/);
     if (lines.length === 0) return [];
     
+    // Detect delimiter
+    const firstLine = lines[0];
+    let delimiter = ',';
+    if (firstLine.includes('\t')) {
+      delimiter = '\t';
+    } else if (firstLine.includes(';') && !firstLine.includes(',')) {
+      delimiter = ';';
+    } else if (firstLine.includes(';')) {
+      const commaCount = (firstLine.match(/,/g) || []).length;
+      const semiCount = (firstLine.match(/;/g) || []).length;
+      if (semiCount > commaCount) {
+        delimiter = ';';
+      }
+    }
+    
     const splitLine = (line) => {
       const result = [];
       let current = '';
@@ -238,7 +253,7 @@ export default function Competencia() {
         const char = line[i];
         if (char === '"') {
           inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
+        } else if (char === delimiter && !inQuotes) {
           result.push(current.trim());
           current = '';
         } else {
