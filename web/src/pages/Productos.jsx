@@ -117,7 +117,7 @@ export default function Productos() {
       for (const chainName of Object.keys(activeUrls)) {
         const urlData = activeUrls[chainName];
         if (urlData.url.trim()) {
-          const docId = `${id}_${chainName}_${urlData.marca || 'Generico'}`.replace(/\s+/g, '_');
+          const docId = urlData.id || `${id}_${chainName}_${urlData.marca || 'Generico'}`.replace(/\s+/g, '_');
           const compRef = doc(db, 'productos_competencia', docId);
           batch.set(compRef, {
             id_producto_propio: id,
@@ -127,6 +127,10 @@ export default function Productos() {
             url: urlData.url.trim(),
             activo: true,
           }, { merge: true });
+        } else if (urlData.id) {
+          // If the URL was emptied, delete the existing record from Firestore
+          const compRef = doc(db, 'productos_competencia', urlData.id);
+          batch.delete(compRef);
         }
       }
 
@@ -594,6 +598,7 @@ function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual
         pc => pc.id_producto_propio === (producto?.id_interno || '') && pc.cadena === c.nombre
       );
       urls[c.nombre] = {
+        id: existing?.id || null,
         url: existing?.url || '',
         marca: existing?.marca || '',
         tipo: existing?.tipo || 'alternativa',

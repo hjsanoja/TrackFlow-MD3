@@ -87,6 +87,16 @@ export default function Layout({ user, userDoc, children }) {
             <span className="material-symbols-outlined select-none text-base">logout</span>
             <span>Cerrar Sesión</span>
           </button>
+
+          {/* Developer attribution & Version */}
+          <div className="pt-3 text-center border-t border-outline-variant/30 flex flex-col items-center gap-0.5">
+            <span className="text-[10px] text-on-surface-variant font-mono tracking-wide">
+              Desarrollador: <span className="font-bold text-primary">Hernando Sanoja</span>
+            </span>
+            <span className="text-[9px] text-on-surface-variant/70 font-mono">
+              Versión V 7.0.0.0
+            </span>
+          </div>
         </div>
       </aside>
 
