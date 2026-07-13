@@ -93,6 +93,7 @@ def cargar_filas_de_csv():
 
 
 def scrape_url(page, url, marca):
+    intentos = 3
     result = {
         "url": url,
         "marca": marca,
@@ -104,29 +105,59 @@ def scrape_url(page, url, marca):
         "error": None,
     }
 
-    try:
-        print("   Cargando...", flush=True)
+    for int_num in range(1, intentos + 1):
+        print(f"   Intento {int_num}/{intentos}...", flush=True)
+        # Reset errors and values for each retry
+        result["error"] = None
+        result["precio_full_bs"] = None
+        result["precio_desc_bs"] = None
+        result["tiene_descuento"] = False
+
         try:
-            response = page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # Incrementar el timeout de carga progresivamente en cada reintento
+            timeout = 30000 + (int_num - 1) * 10000
+            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             if response and response.status >= 400:
-                result["error"] = "HTTP " + str(response.status)
-                return result
+                result["error"] = f"HTTP {response.status}"
+                # Si el producto tiene un código 404 (no existe), no tiene sentido reintentar
+                if response.status == 404:
+                    result["error"] = "Producto no disponible o enlace roto (404)"
+                    return result
+                time.sleep(2)
+                continue
         except PlaywrightTimeout:
             result["error"] = "Timeout cargando la página"
-            return result
+            time.sleep(2)
+            continue
+        except Exception as e:
+            result["error"] = f"Error de red/carga: {type(e).__name__}"
+            time.sleep(2)
+            continue
 
         print("   Esperando contenido...", flush=True)
         try:
-            page.wait_for_selector("h1", timeout=12000)
+            # Esperar a que el h1 de la página esté cargado
+            page.wait_for_selector("h1", timeout=8000)
         except PlaywrightTimeout:
             pass
 
-        # Desplazamiento sutil para gatillar la hidratación de React/NextJS
+        # CRÍTICO: Esperar de forma inteligente a que los precios se carguen vía llamadas asíncronas
+        try:
+            # Esperamos hasta 6 segundos que el texto "Bs" (común en Farmatodo Vzla) se renderice en el DOM
+            page.wait_for_selector("text=/Bs/i", timeout=6000)
+        except PlaywrightTimeout:
+            # Si no aparece "Bs", esperamos por cualquier selector de clase que contenga "price"
+            try:
+                page.wait_for_selector(".product-purchase__price, [class*='price']", timeout=3000)
+            except PlaywrightTimeout:
+                pass
+
+        # Desplazamiento sutil para simular actividad del usuario y gatillar hidratación de React/Next.js
         try:
             page.evaluate("window.scrollTo(0, 300)")
             time.sleep(1.0)
             page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(1.5)
+            time.sleep(1.0)
         except Exception:
             pass
 
@@ -150,7 +181,16 @@ def scrape_url(page, url, marca):
 
                 // 2. Extraer H1 (nombre del producto)
                 const h1El = document.querySelector('h1');
-                const nombre = h1El ? (h1El.innerText || h1El.textContent || '').trim() : null;
+                let nombre = h1El ? (h1El.innerText || h1El.textContent || '').trim() : null;
+
+                if (!nombre || !nombre.trim()) {
+                    const titleEl = document.querySelector('[class*="product-name"], [class*="title-product"]');
+                    if (titleEl) nombre = (titleEl.innerText || titleEl.textContent || '').trim();
+                }
+
+                if (!nombre || !nombre.trim()) {
+                    nombre = document.title.split('|')[0].split('-')[0].trim();
+                }
 
                 // Detectar si el producto no está disponible o el enlace está roto
                 const isNotFound = title.includes('404') || 
@@ -165,10 +205,67 @@ def scrape_url(page, url, marca):
                     };
                 }
 
-                // 3. Extraer precios usando metadatos robustos
-                let metaActive = null;
+                // 3. Buscar contenedor de compra principal para delimitar la búsqueda de precios y evitar sugeridos
+                let container = document.querySelector('.product-purchase') || 
+                                document.querySelector('[class*="product-purchase"]') ||
+                                document.querySelector('[class*="purchase-container"]') ||
+                                document.querySelector('[class*="buy-box"]') ||
+                                document.querySelector('[class*="price-container"]') ||
+                                document.querySelector('.product-info') ||
+                                document.querySelector('[class*="product-info"]');
+                
+                if (!container && h1El) {
+                    let cur = h1El;
+                    for (let i = 0; i < 5; i++) {
+                        if (!cur || cur === document.body) break;
+                        const text = cur.innerText || cur.textContent || '';
+                        if (text.includes('Bs') || text.match(/\\d+[,.]\\d{2}/)) {
+                            container = cur;
+                            break;
+                        }
+                        cur = cur.parentElement;
+                    }
+                }
 
-                // Intentar con JSON-LD (datos estructurados de Schema.org)
+                // Funciones de parseo interno de JS
+                function jsParsePrice(cleaned) {
+                    if (!cleaned) return null;
+                    cleaned = cleaned.replace(/[^\\d.,]/g, '');
+                    if (!cleaned) return null;
+                    
+                    if (cleaned.includes(',')) {
+                        cleaned = cleaned.replace(/\\./g, '').replace(/,/g, '.');
+                    } else {
+                        const dotCount = (cleaned.match(/\\./g) || []).length;
+                        if (dotCount === 1) {
+                            const parts = cleaned.split('.');
+                            if (parts[1].length === 3) {
+                                cleaned = cleaned.replace(/\\./g, '');
+                            }
+                        } else if (dotCount > 1) {
+                            cleaned = cleaned.replace(/\\./g, '');
+                        }
+                    }
+                    const val = parseFloat(cleaned);
+                    return isNaN(val) ? null : val;
+                }
+
+                function extractPricesFromText(text) {
+                    if (!text) return [];
+                    const regex = /(?:Bs\\.?|Ref\\.?|\\$)?\\s*(\\d+(?:[.,]\\d+)*)/gi;
+                    const matches = [];
+                    let m;
+                    while ((m = regex.exec(text)) !== null) {
+                        const num = jsParsePrice(m[1]);
+                        if (num !== null && num > 0.1 && num < 100000) {
+                            matches.push(num);
+                        }
+                    }
+                    return matches;
+                }
+
+                // 4. Buscar precios vía JSON-LD (datos estructurados) como primer recurso para precio activo
+                let metaActive = null;
                 const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
                 for (const script of jsonLdScripts) {
                     try {
@@ -207,7 +304,6 @@ def scrape_url(page, url, marca):
                     } catch(e) {}
                 }
 
-                // Intentar con etiquetas meta de precio
                 if (!metaActive) {
                     const metaPriceAmount = document.querySelector('meta[property="product:price:amount"]') || 
                                             document.querySelector('meta[property="og:price:amount"]') ||
@@ -217,14 +313,19 @@ def scrape_url(page, url, marca):
                     }
                 }
 
-                // 4. Selectores DOM (para precio activo y original con descuento)
+                // 5. Selectores clásicos y experimentales
                 const activeSelectors = [
                     'span.product-purchase__price--active',
+                    '.product-purchase__price--active',
                     '[class*="price--active"]',
                     '.product-purchase__price',
                     'span.price',
                     '[class*="product-price"]',
-                    '[class*="price_active"]'
+                    '[class*="price_active"]',
+                    '[class*="price-active"]',
+                    '[class*="price-member"]',
+                    '[class*="member-price"]',
+                    '[class*="discount"]'
                 ];
                 
                 const originalSelectors = [
@@ -233,60 +334,40 @@ def scrape_url(page, url, marca):
                     '[class*="price--original"]',
                     '.product-purchase__price-original',
                     '[class*="price_original"]',
-                    'span.product-purchase__price-original'
+                    '[class*="price-original"]',
+                    'span.product-purchase__price-original',
+                    '[class*="old-price"]',
+                    '[class*="list-price"]'
                 ];
 
                 let activeEl = null;
                 for (const sel of activeSelectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        activeEl = el;
-                        break;
-                    }
+                    const el = container ? container.querySelector(sel) : document.querySelector(sel);
+                    if (el) { activeEl = el; break; }
                 }
 
                 let originalEl = null;
                 for (const sel of originalSelectors) {
-                    const el = document.querySelector(sel);
-                    if (el) {
-                        originalEl = el;
-                        break;
-                    }
+                    const el = container ? container.querySelector(sel) : document.querySelector(sel);
+                    if (el) { originalEl = el; break; }
                 }
 
                 let active_text = activeEl ? (activeEl.innerText || activeEl.textContent || '').trim() : null;
                 let original_text = originalEl ? (originalEl.innerText || originalEl.textContent || '').trim() : null;
 
-                // Usar metadato activo si el DOM no devolvió nada
                 if (!active_text && metaActive) {
                     active_text = metaActive;
                 }
 
-                // Búsqueda de respaldo si hay descuento pero no se obtuvo etiqueta del precio original
-                if (!original_text && activeEl) {
-                    const container = activeEl.closest('.product-purchase__price-container') || 
-                                      activeEl.closest('[class*="price-container"]') || 
-                                      activeEl.parentElement;
-                    if (container) {
-                        const allText = (container.innerText || container.textContent || '');
-                        const prices = allText.match(/Bs\.?\s*[\d.,]+/g) || [];
-                        if (prices.length > 1) {
-                            const activeClean = (active_text || '').replace(/[^\d]/g, '');
-                            for (const p of prices) {
-                                const pClean = p.replace(/[^\d]/g, '');
-                                if (activeClean && pClean !== activeClean) {
-                                    original_text = p;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+                // 6. Extracción heurística por bloque de texto de la caja de compra
+                const containerText = container ? (container.innerText || container.textContent || '') : '';
+                const blockPrices = extractPricesFromText(containerText);
 
                 return {
                     active_text: active_text,
                     original_text: original_text,
                     nombre: nombre,
+                    block_prices: blockPrices
                 };
             }
         """)
@@ -294,32 +375,42 @@ def scrape_url(page, url, marca):
         if data.get("error"):
             result["error"] = data["error"]
             result["nombre"] = data.get("nombre")
-            return result
+            time.sleep(2)
+            continue
 
         result["nombre"] = data.get("nombre")
         precio_activo = parse_price(data.get("active_text"))
         precio_original = parse_price(data.get("original_text"))
 
+        # Si los selectores de clases fallaron, pero pudimos extraer números del bloque de compra:
+        block_prices = data.get("block_prices", [])
+        if (precio_activo is None) and block_prices:
+            unique_prices = sorted(list(set(block_prices)))
+            if len(unique_prices) == 1:
+                precio_activo = unique_prices[0]
+            elif len(unique_prices) >= 2:
+                # El menor es el activo/oferta, el mayor es el original
+                precio_activo = unique_prices[0]
+                precio_original = unique_prices[-1]
+
         if precio_original is not None and precio_activo is not None:
-            # Si se obtuvo original y activo, y son diferentes, hay descuento
             if precio_original > precio_activo:
                 result["precio_full_bs"] = precio_original
                 result["precio_desc_bs"] = precio_activo
                 result["tiene_descuento"] = True
             else:
                 result["precio_full_bs"] = precio_activo
+            break  # Éxito!
         elif precio_activo is not None:
             result["precio_full_bs"] = precio_activo
+            break  # Éxito!
         else:
             if not result.get("nombre"):
-                result["error"] = "No se pudo cargar la estructura de la página (posible bloqueo de IP por seguridad o error de red)."
+                result["error"] = "No se pudo cargar la estructura de la página (posible bloqueo o error de red)."
             else:
-                result["error"] = "Precio no encontrado en la página (el producto podría estar agotado o requiere configurar ubicación)."
-
-    except PlaywrightTimeout as e:
-        result["error"] = "Timeout: " + str(e)
-    except Exception as e:
-        result["error"] = type(e).__name__ + ": " + str(e)
+                result["error"] = "Precio no encontrado en la página (agotado o sin precio visible)."
+            time.sleep(2)
+            # Reintentar
 
     return result
 
