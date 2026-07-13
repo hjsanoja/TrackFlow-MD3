@@ -1,0 +1,12 @@
+{
+  "name": "trackflow-root",
+  "private": true,
+  "workspaces": [
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=web",
+    "build": "npm run build --workspace=web",
+    "lint": "echo 'No lint script configured'"
+  }
+}

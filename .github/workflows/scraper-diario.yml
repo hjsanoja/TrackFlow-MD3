@@ -1,0 +1,51 @@
+name: Scraper diario
+
+# Triggers: cron diario + manual desde GitHub UI + manual desde el panel via API
+on:
+  schedule:
+    # 6:00 AM hora Venezuela = 10:00 UTC
+    # GitHub usa cron UTC. Precision ~5 min.
+    - cron: '0 10 * * *'
+  workflow_dispatch:        # boton "Run workflow" en la UI de GitHub
+  repository_dispatch:      # disparo via API (lo usaremos desde el panel)
+    types: [run-scraper]
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Install Playwright browser
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+
+      - name: Update BCV rate
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python scraper/update_bcv.py
+        continue-on-error: true   # si falla la tasa, igual corremos el scraper
+
+      - name: Run Farmatodo scraper
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python scraper/farmatodo.py
+
+      - name: Push results to Firestore
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: python scraper/push_to_firestore.py
