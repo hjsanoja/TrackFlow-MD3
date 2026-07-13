@@ -37,12 +37,23 @@ def read_text_robust(path):
 def parse_price(text):
     if not text:
         return None
-    cleaned = re.sub(r"[^\d.]", "", text.replace("Bs.", "").replace("Bs", ""))
+    cleaned = text.replace("Bs.", "").replace("Bs", "").strip()
+    cleaned = re.sub(r"[^\d.,]", "", cleaned)
     if not cleaned:
         return None
-    if cleaned.count(".") > 1:
-        parts = cleaned.split(".")
-        cleaned = "".join(parts[:-1]) + "." + parts[-1]
+    
+    if "," in cleaned:
+        # Venezuelan format: dot is thousands, comma is decimal
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    else:
+        # No comma. Only dots might exist.
+        if cleaned.count(".") == 1:
+            parts = cleaned.split(".")
+            if len(parts[1]) == 3:  # Single dot followed by 3 digits is likely thousands
+                cleaned = cleaned.replace(".", "")
+        elif cleaned.count(".") > 1:
+            cleaned = cleaned.replace(".", "")
+            
     try:
         return float(cleaned)
     except ValueError:

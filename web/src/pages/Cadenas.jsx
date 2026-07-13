@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import ConfirmModal from '../components/ConfirmModal';
 
 // Scrapers disponibles en el código actual
 const SCRAPERS_DISPONIBLES = [
@@ -20,6 +21,7 @@ export default function Cadenas() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [message, setMessage] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   const cargar = async () => {
     setLoading(true);
@@ -72,13 +74,14 @@ export default function Cadenas() {
     }
   };
 
-  const handleDelete = async (cadena) => {
-    const count = urlsPorCadena.get(cadena.nombre) || 0;
-    const extra = count > 0 ? `\n\nATENCIÓN: hay ${count} URL(s) activa(s) asignadas a esta cadena. Esas URLs quedarán huérfanas pero no se eliminan automáticamente.` : '';
-    const confirmar = window.confirm(
-      `¿Eliminar la cadena "${cadena.nombre}"?${extra}\n\nLa acción no se puede deshacer.`
-    );
-    if (!confirmar) return;
+  const handleDelete = (cadena) => {
+    setConfirmDelete(cadena);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirmDelete) return;
+    const cadena = confirmDelete;
+    setConfirmDelete(null);
     try {
       await deleteDoc(doc(db, 'cadenas', cadena.id));
       setMessage({ type: 'success', text: 'Cadena eliminada con éxito' });
@@ -230,6 +233,26 @@ export default function Cadenas() {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {/* Custom Confirmation Dialog */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="¿Eliminar Cadena de Monitoreo?"
+        message={
+          confirmDelete 
+            ? `¿Estás seguro de que deseas eliminar la cadena de monitoreo "${confirmDelete.nombre}"?${
+                (urlsPorCadena.get(confirmDelete.nombre) || 0) > 0 
+                  ? `\n\nATENCIÓN: hay ${urlsPorCadena.get(confirmDelete.nombre)} URL(s) activa(s) asignadas a esta cadena. Esas URLs quedarán huérfanas pero no se eliminan automáticamente.`
+                  : ''
+              }\n\nEsta acción no se puede deshacer.`
+            : ''
+        }
+        confirmText="Eliminar"
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

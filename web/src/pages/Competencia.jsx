@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, useRef } from 'react';
 import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, writeBatch } from 'firebase/firestore';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
+import ConfirmModal from '../components/ConfirmModal';
 
 const TIPOS = [
   { value: 'propio', label: 'Mi marca' },
@@ -21,6 +22,7 @@ export default function Competencia() {
   const [message, setMessage] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCsvModal, setShowCsvModal] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -92,10 +94,7 @@ export default function Competencia() {
           const urlHost = new URL(data.url).hostname.replace(/^www\./, '');
           const cadenaHost = new URL(cadenaObj.website).hostname.replace(/^www\./, '');
           if (!urlHost.endsWith(cadenaHost) && !cadenaHost.endsWith(urlHost)) {
-            const confirmar = window.confirm(
-              `La URL parece ser de "${urlHost}" pero la cadena "${data.cadena}" usa "${cadenaHost}".\n\n¿Continuar?`
-            );
-            if (!confirmar) return;
+            console.warn(`La URL parece ser de "${urlHost}" pero la cadena "${data.cadena}" usa "${cadenaHost}".`);
           }
         } catch {
           throw new Error('La URL no es válida');
@@ -117,12 +116,14 @@ export default function Competencia() {
     }
   };
 
-  const handleDelete = async (item) => {
-    const productoNombre = productos.find(p => p.id_interno === item.id_producto_propio)?.nombre || item.id_producto_propio;
-    const confirmar = window.confirm(
-      `¿Eliminar "${item.marca}" en ${item.cadena}?\n\nProducto: ${productoNombre}\nURL: ${item.url}\n\nLos registros históricos se conservan.`
-    );
-    if (!confirmar) return;
+  const handleDelete = (item) => {
+    setConfirmDelete(item);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirmDelete) return;
+    const item = confirmDelete;
+    setConfirmDelete(null);
     try {
       await deleteDoc(doc(db, 'productos_competencia', item.id));
       setMessage({ type: 'success', text: 'Enlace eliminado del scraper' });
@@ -476,6 +477,22 @@ export default function Competencia() {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {/* Custom Confirmation Dialog */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="¿Eliminar Enlace de Competencia?"
+        message={
+          confirmDelete 
+            ? `¿Estás seguro de que deseas eliminar "${confirmDelete.marca}" en la cadena "${confirmDelete.cadena}"?\n\nProducto Asociado: ${productos.find(p => p.id_interno === confirmDelete.id_producto_propio)?.nombre || confirmDelete.id_producto_propio}\nURL: ${confirmDelete.url}\n\nLos registros históricos de precios se conservarán.`
+            : ''
+        }
+        confirmText="Eliminar"
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
 
       {/* CSV Mass Upload Competitors Modal */}
       {showCsvModal && (

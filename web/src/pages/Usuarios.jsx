@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import ConfirmModal from '../components/ConfirmModal';
 
 const ROLES = [
   { value: 'administrador', label: 'Administrador', desc: 'Acceso completo, puede editar todo' },
@@ -16,6 +17,7 @@ export default function Usuarios({ userDoc }) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [message, setMessage] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   const cargar = async () => {
     setLoading(true);
@@ -63,15 +65,18 @@ export default function Usuarios({ userDoc }) {
     }
   };
 
-  const handleDelete = async (usuario) => {
+  const handleDelete = (usuario) => {
     if (usuario.email === userDoc?.email) {
       setMessage({ type: 'error', text: 'No puedes eliminar tu propio usuario.' });
       return;
     }
-    const confirmar = window.confirm(
-      `¿Eliminar a "${usuario.nombre}" (${usuario.email})?\n\nIMPORTANTE: el documento se borra de Firestore, pero su cuenta de Firebase Auth queda activa. Para impedir el login completamente, también debes eliminarla en Firebase Console → Authentication.`
-    );
-    if (!confirmar) return;
+    setConfirmDelete(usuario);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirmDelete) return;
+    const usuario = confirmDelete;
+    setConfirmDelete(null);
     try {
       await deleteDoc(doc(db, 'usuarios', usuario.id));
       setMessage({ type: 'success', text: 'Usuario eliminado con éxito de Firestore.' });
@@ -236,6 +241,22 @@ export default function Usuarios({ userDoc }) {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {/* Custom Confirmation Dialog */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="¿Eliminar Usuario?"
+        message={
+          confirmDelete 
+            ? `¿Estás seguro de que deseas eliminar a "${confirmDelete.nombre}" (${confirmDelete.email})?\n\nIMPORTANTE: El documento se borrará de Firestore, pero su cuenta de Firebase Auth seguirá activa. Para impedir el inicio de sesión completamente, también debes eliminarla en Firebase Console → Authentication.`
+            : ''
+        }
+        confirmText="Eliminar"
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
     </div>
   );
 }

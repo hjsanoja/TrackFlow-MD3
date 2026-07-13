@@ -3,6 +3,7 @@ import {
   collection, getDocs, doc, setDoc, deleteDoc, writeBatch
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import ConfirmModal from '../components/ConfirmModal';
 
 const CATEGORIAS = [
   'Analgésicos',
@@ -27,6 +28,7 @@ export default function Productos() {
   const [filtroUrls, setFiltroUrls] = useState('todos'); // todos | con_urls | sin_urls
   const [message, setMessage] = useState(null);
   const [showCsvModal, setShowCsvModal] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -138,14 +140,16 @@ export default function Productos() {
     }
   };
 
-  const handleDelete = async (producto) => {
+  const handleDelete = (producto) => {
+    setConfirmDelete(producto);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!confirmDelete) return;
+    const producto = confirmDelete;
     const links = urlsPorProducto.get(producto.id_interno) || [];
     const count = links.length;
-    const extra = count > 0 ? `\n\nATENCIÓN: este producto tiene ${count} URL(s) de competencia activa(s).` : '';
-    const confirmar = window.confirm(
-      `¿Eliminar "${producto.nombre}"?${extra}\n\nLa acción no se puede deshacer.`
-    );
-    if (!confirmar) return;
+    setConfirmDelete(null);
 
     try {
       await deleteDoc(doc(db, 'productos', producto.id));
@@ -495,6 +499,26 @@ export default function Productos() {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {/* Custom Confirmation Dialog */}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        title="¿Eliminar Producto?"
+        message={
+          confirmDelete 
+            ? `¿Estás seguro de que deseas eliminar "${confirmDelete.nombre}"?${
+                (urlsPorProducto.get(confirmDelete.id_interno) || []).length > 0 
+                  ? `\n\nATENCIÓN: este producto tiene ${(urlsPorProducto.get(confirmDelete.id_interno) || []).length} URL(s) de competencia activa(s) que también se eliminarán.`
+                  : ''
+              }\n\nEsta acción no se puede deshacer.`
+            : ''
+        }
+        confirmText="Eliminar"
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => setConfirmDelete(null)}
+      />
 
       {/* CSV Import Modal */}
       {showCsvModal && (
