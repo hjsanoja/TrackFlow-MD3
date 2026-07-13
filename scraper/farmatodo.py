@@ -302,6 +302,8 @@ def main():
             r["id_producto_propio"] = id_prod
             r["cadena"] = "Farmatodo"
             r["tipo"] = tipo
+            r["_doc_id"] = fila.get("_doc_id")
+            r["laboratorio"] = fila.get("laboratorio")
             resultados.append(r)
 
             if r["error"]:

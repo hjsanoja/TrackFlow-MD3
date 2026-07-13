@@ -84,9 +84,13 @@ export default function Competencia() {
 
   const handleSave = async (data, isNew) => {
     try {
-      const docId = `${data.id_producto_propio}_${data.cadena}_${data.marca}`.replace(/\s+/g, '_');
+      const labPart = data.laboratorio?.trim() ? `_${data.laboratorio.trim()}` : '';
+      const docId = isNew
+        ? `${data.id_producto_propio}_${data.cadena}_${data.marca}${labPart}`.replace(/\s+/g, '_')
+        : editing.id;
+      
       if (isNew && items.some(it => it.id === docId)) {
-        throw new Error('Ya existe esta combinación de producto + cadena + marca');
+        throw new Error('Ya existe esta combinación de producto + cadena + marca + laboratorio');
       }
       const cadenaObj = cadenas.find(c => c.nombre === data.cadena);
       if (cadenaObj && cadenaObj.website && data.url) {
@@ -182,10 +186,14 @@ export default function Competencia() {
           const marca = (row.marca || row.Marca || '').trim();
           const url = (row.url || row.URL || '').trim();
           const tipo = (row.tipo || row.Tipo || 'alternativa').trim().toLowerCase();
+          const laboratorio = (row.laboratorio || row.Laboratorio || '').trim();
+          const concentracion = (row.concentracion || row.Concentracion || '').trim();
+          const tamano = (row.tamano || row.Tamano || '').trim();
 
           if (!id_producto || !cadena || !marca || !url) continue;
 
-          const docId = `${id_producto}_${cadena}_${marca}`.replace(/\s+/g, '_');
+          const labPart = laboratorio ? `_${laboratorio}` : '';
+          const docId = `${id_producto}_${cadena}_${marca}${labPart}`.replace(/\s+/g, '_');
           const compRef = doc(db, 'productos_competencia', docId);
 
           batch.set(compRef, {
@@ -195,6 +203,9 @@ export default function Competencia() {
             marca,
             url,
             activo: row.activo ? (row.activo.toLowerCase() === 'true' || row.activo === '1') : true,
+            laboratorio,
+            concentracion,
+            tamano,
           }, { merge: true });
 
           count++;
@@ -255,9 +266,9 @@ export default function Competencia() {
   };
 
   const downloadExampleCsv = () => {
-    const headers = 'id_producto_propio,cadena,tipo,marca,url,activo\n';
-    const row1 = 'P001,Farmatodo,alternativa,Atamel Genérico,https://www.farmatodo.com.ve/producto/atamel-500mg,true\n';
-    const row2 = 'P001,Locatel,alternativa,Calox Acetaminofén,https://www.locatel.com.ve/calox-500mg,true\n';
+    const headers = 'id_producto_propio,cadena,tipo,marca,url,activo,laboratorio,concentracion,tamano\n';
+    const row1 = 'P001,Farmatodo,alternativa,Acetaminofén,https://www.farmatodo.com.ve/producto/atamel-500mg,true,Genven,500mg,10tab\n';
+    const row2 = 'P001,Locatel,alternativa,Acetaminofén,https://www.locatel.com.ve/calox-500mg,true,Calox,500mg,10tab\n';
     const blob = new Blob([headers + row1 + row2], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -525,6 +536,9 @@ export default function Competencia() {
                 <div>url <span className="text-on-surface-variant font-sans font-medium">(Enlace completo)</span></div>
                 <div>tipo <span className="text-on-surface-variant font-sans font-medium">(Opcional: propio / alternativa)</span></div>
                 <div>activo <span className="text-on-surface-variant font-sans font-medium">(Opcional: true / false)</span></div>
+                <div>laboratorio <span className="text-on-surface-variant font-sans font-medium">(Opcional: Laboratorio fabricante)</span></div>
+                <div>concentracion <span className="text-on-surface-variant font-sans font-medium">(Opcional: Concentración, ej. 500mg)</span></div>
+                <div>tamano <span className="text-on-surface-variant font-sans font-medium">(Opcional: Presentación, ej. 10tab)</span></div>
               </div>
               <div className="flex justify-between items-center pt-2">
                 <button type="button" onClick={downloadExampleCsv}

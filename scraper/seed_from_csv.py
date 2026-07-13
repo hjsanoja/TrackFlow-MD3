@@ -93,7 +93,14 @@ def seed_productos_competencia(db):
         prod_id = row["id_producto_propio"].strip()
         cadena = row["cadena"].strip()
         marca = row.get("marca", "").strip()
-        doc_id = (prod_id + "_" + cadena + "_" + marca).replace(" ", "_")
+        laboratorio = row.get("laboratorio", "").strip()
+        concentracion = row.get("concentracion", "").strip()
+        tamano = row.get("tamano", "").strip()
+        
+        doc_id = prod_id + "_" + cadena + "_" + marca
+        if laboratorio:
+            doc_id += "_" + laboratorio
+        doc_id = doc_id.replace(" ", "_")
 
         db.collection("productos_competencia").document(doc_id).set({
             "id_producto_propio": prod_id,
@@ -102,6 +109,9 @@ def seed_productos_competencia(db):
             "marca": marca,
             "url": row.get("url", "").strip(),
             "activo": es_si(row.get("activo", "")),
+            "laboratorio": laboratorio,
+            "concentracion": concentracion,
+            "tamano": tamano,
         }, merge=True)
 
 

@@ -8,12 +8,35 @@ import {
 
 const COLORS = ['#040d53', '#70C145', '#ba1a1a', '#004ecb', '#002f6c', '#0891b2', '#db2777'];
 
+function InfoTooltip({ text, align = 'center' }) {
+  const alignClass = align === 'left' 
+    ? 'left-0 translate-x-0' 
+    : align === 'right' 
+      ? 'right-0 translate-x-0 animate-fade-in' 
+      : 'left-1/2 -translate-x-1/2 animate-fade-in';
+      
+  return (
+    <div className="relative group inline-block ml-1 align-middle leading-none">
+      <span className="material-symbols-outlined text-[15px] text-[#464650] hover:text-[#040d53] transition-colors cursor-help select-none">
+        info
+      </span>
+      <div className={`absolute bottom-full mb-2 w-64 p-3 bg-[#1c1b1f] text-white text-[10.5px] leading-relaxed rounded-xl opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-all duration-200 shadow-xl z-50 font-normal normal-case tracking-normal ${alignClass}`}>
+        {text}
+        <div className={`absolute top-full border-4 border-transparent border-t-[#1c1b1f] ${
+          align === 'left' ? 'left-3' : align === 'right' ? 'right-3' : 'left-1/2 -translate-x-1/2'
+        }`}></div>
+      </div>
+    </div>
+  );
+}
+
 export default function ProductDetailModal({ producto, competencia, currency, bcvRate, onClose }) {
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [priceMode, setPriceMode] = useState('descuento');
 
   const handleClearHistory = async () => {
     setClearing(true);
@@ -73,7 +96,9 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
       const marca = `${h.marca} (${h.cadena})`;
       marcasVistas.add(marca);
 
-      const precioBs = h.precio_desc_bs || h.precio_full_bs;
+      const precioBs = priceMode === 'descuento'
+        ? (h.precio_desc_bs || h.precio_full_bs)
+        : h.precio_full_bs;
       if (!precioBs) continue;
       const precio = currency === 'usd' && bcvRate ? precioBs / bcvRate : precioBs;
 
@@ -81,8 +106,19 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
       byDate.get(dateKey)[marca] = parseFloat(precio.toFixed(2));
     }
 
+    const data = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+    
+    // Calcular el promedio por fecha y añadirlo a cada item
+    data.forEach(item => {
+      const keys = Object.keys(item).filter(k => k !== 'date');
+      if (keys.length > 0) {
+        const sum = keys.reduce((acc, k) => acc + item[k], 0);
+        item['Promedio'] = parseFloat((sum / keys.length).toFixed(2));
+      }
+    });
+
     return {
-      data: Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date)),
+      data,
       marcas: Array.from(marcasVistas),
     };
   })();
@@ -90,7 +126,9 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   // Calculations for smart indicators
   const validPrices = competencia
     .map(c => {
-      const pBs = c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs;
+      const pBs = priceMode === 'descuento'
+        ? (c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs)
+        : c.ultimo_precio_full_bs;
       return pBs ? { cadena: c.cadena, marca: c.marca, priceBs: pBs, tipo: c.tipo } : null;
     })
     .filter(Boolean);
@@ -104,7 +142,11 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
     : null;
 
   const propioItem = competencia.find(c => c.tipo === 'propio');
-  const propioPriceBs = propioItem ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs) : null;
+  const propioPriceBs = propioItem 
+    ? (priceMode === 'descuento' 
+        ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs)
+        : propioItem.ultimo_precio_full_bs)
+    : null;
 
   const diffMinBs = (propioPriceBs !== null && minPriceItem !== null) ? propioPriceBs - minPriceItem.priceBs : null;
   const pctMin = (diffMinBs !== null && minPriceItem.priceBs > 0) ? (diffMinBs / minPriceItem.priceBs) * 100 : null;
@@ -140,12 +182,47 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
         {/* Content Area */}
         <div className="p-6 space-y-6 overflow-y-auto">
+          {/* Price Switch Controls */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#f3f4f9] p-3 rounded-2xl border border-[#e1e2ec] animate-fade-in">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-[#040d53] text-lg">payments</span>
+              <span className="text-xs font-bold uppercase tracking-wider text-[#464650] font-mono">Modo de Comparación:</span>
+            </div>
+            <div className="bg-[#e1e2ec] p-1 rounded-xl flex gap-1 self-start sm:self-auto">
+              <button
+                onClick={() => setPriceMode('descuento')}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1.5 ${
+                  priceMode === 'descuento' 
+                    ? 'bg-white text-[#040d53] shadow-sm' 
+                    : 'text-[#464650] hover:bg-white/50'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[14px]">sell</span>
+                Con Descuento / Oferta
+              </button>
+              <button
+                onClick={() => setPriceMode('lista')}
+                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1.5 ${
+                  priceMode === 'lista' 
+                    ? 'bg-white text-[#040d53] shadow-sm' 
+                    : 'text-[#464650] hover:bg-white/50'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[14px]">receipt_long</span>
+                Precio de Lista (Full)
+              </button>
+            </div>
+          </div>
+
           {/* Smart Indicators Card Grid */}
           {validPrices.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in">
               {/* Mas Barato Card */}
-              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Más Barato (Mercado)</span>
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1 relative">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Más Barato (Mercado)</span>
+                  <InfoTooltip text="El precio mínimo detectado entre todos tus competidores en el mercado para el modo seleccionado (con descuento o de lista)." align="left" />
+                </div>
                 <div className="text-lg font-display font-extrabold text-[#70C145]">
                   {formatHeaderPrice(minPriceItem?.priceBs)}
                 </div>
@@ -155,19 +232,25 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               </div>
 
               {/* Mi Precio Card */}
-              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Mi Precio (Marca Propia)</span>
-                <div className="text-lg font-display font-extrabold text-[#70C145]">
+              <div className="bg-[#e8f5e9]/30 border border-[#a5d6a7]/50 p-4 rounded-2xl shadow-sm space-y-1 relative">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#2e7d32]">Mi Precio (Marca Propia)</span>
+                  <InfoTooltip text="El precio actual de tu producto marca propia. Se muestra en verde para resaltar que es la referencia de tu marca." align="left" />
+                </div>
+                <div className="text-lg font-display font-extrabold text-[#2e7d32]">
                   {propioPriceBs ? formatHeaderPrice(propioPriceBs) : '—'}
                 </div>
-                <p className="text-[10px] text-[#464650] font-semibold truncate">
+                <p className="text-[10px] text-[#2e7d32]/80 font-bold truncate">
                   {propioItem ? `Marca: ${propioItem.marca}` : 'No vinculado'}
                 </p>
               </div>
 
               {/* vs Minimo Card */}
-              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Mínimo</span>
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1 relative">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Mínimo</span>
+                  <InfoTooltip text="Calculado como: ((Mi Precio - Precio Mínimo) / Precio Mínimo) * 100. Te indica qué tan por encima del precio más económico del mercado te encuentras. El valor ideal es <= 0%." align="right" />
+                </div>
                 {propioPriceBs && minPriceItem ? (
                   <>
                     <div className={`text-lg font-display font-extrabold ${pctMin && pctMin > 0.1 ? 'text-[#ba1a1a]' : 'text-[#70C145]'}`}>
@@ -183,8 +266,11 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               </div>
 
               {/* vs Promedio Card */}
-              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
-                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Promedio</span>
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1 relative">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Promedio</span>
+                  <InfoTooltip text="Calculado como: ((Mi Precio - Promedio) / Promedio) * 100. Compara tu precio con el promedio aritmético de la competencia para ver si estás posicionado por encima o por debajo de la media general." align="right" />
+                </div>
                 {propioPriceBs && avgPriceBs ? (
                   <>
                     <div className={`text-lg font-display font-extrabold ${pctAvg && pctAvg > 0 ? 'text-[#ba1a1a]' : 'text-[#70C145]'}`}>
@@ -290,7 +376,19 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                   <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={chartData.data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f3f3f6" />
-                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#464650' }} />
+                      <XAxis 
+                        dataKey="date" 
+                        tickFormatter={(tick) => {
+                          try {
+                            const parts = tick.split('-');
+                            if (parts.length === 3) {
+                              return `${parts[2]}/${parts[1]}`;
+                            }
+                          } catch (e) {}
+                          return tick;
+                        }}
+                        tick={{ fontSize: 11, fill: '#464650' }} 
+                      />
                       <YAxis tick={{ fontSize: 11, fill: '#464650' }} />
                       <Tooltip />
                       <Legend wrapperStyle={{ fontSize: 11, marginTop: 10 }} />
@@ -305,6 +403,19 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                           connectNulls
                         />
                       ))}
+                      {/* Línea especial para el Promedio del mercado */}
+                      {chartData.data.length > 0 && (
+                        <Line
+                          type="monotone"
+                          dataKey="Promedio"
+                          name="Promedio Mercado"
+                          stroke="#ea580c"
+                          strokeWidth={3}
+                          strokeDasharray="6 4"
+                          dot={{ r: 4 }}
+                          connectNulls
+                        />
+                      )}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>

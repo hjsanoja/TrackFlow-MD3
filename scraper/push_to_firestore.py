@@ -47,9 +47,13 @@ def main():
     errores = 0
 
     for r in resultados:
-        prod_comp_id = (
-            r["id_producto_propio"] + "_" + r["cadena"] + "_" + r["marca"]
-        ).replace(" ", "_")
+        prod_comp_id = r.get("_doc_id")
+        if not prod_comp_id:
+            laboratorio = r.get("laboratorio", "")
+            parts = [r["id_producto_propio"], r["cadena"], r["marca"]]
+            if laboratorio:
+                parts.append(laboratorio)
+            prod_comp_id = "_".join(parts).replace(" ", "_")
 
         if r.get("error"):
             print("  Skip " + r["marca"] + ": " + r["error"])
