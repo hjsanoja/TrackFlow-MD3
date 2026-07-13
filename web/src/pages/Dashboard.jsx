@@ -490,7 +490,7 @@ export default function Dashboard({ user, userDoc }) {
         <div className="bg-[#ffdad6]/40 border border-[#ffdad6] rounded-3xl p-5 space-y-3 shadow-sm">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-xl text-[#93000a]">warning</span>
-            <h3 className="font-extrabold text-[#93000a] text-sm">Productos con Alta Dispersión de Precios (Volatilidad >20%)</h3>
+            <h3 className="font-extrabold text-[#93000a] text-sm">Productos con Alta Dispersión de Precios (Volatilidad &gt;20%)</h3>
           </div>
           <p className="text-xs text-[#93000a]/90">
             Los siguientes medicamentos presentan variaciones de precios muy altas entre las cadenas. Esto significa que hay oportunidades críticas de ahorro comprando en el proveedor líder.
