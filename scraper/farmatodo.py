@@ -13,8 +13,10 @@ import json
 import re
 import sys
 import time
+import random
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 
@@ -92,8 +94,8 @@ def cargar_filas_de_csv():
     return filas
 
 
-def scrape_url(page, url, marca):
-    intentos = 3
+def scrape_url(page, url, marca, thread_id=1):
+    intentos = 4
     result = {
         "url": url,
         "marca": marca,
@@ -106,7 +108,7 @@ def scrape_url(page, url, marca):
     }
 
     for int_num in range(1, intentos + 1):
-        print(f"   Intento {int_num}/{intentos}...", flush=True)
+        print(f"   [Hilo {thread_id}] Intento {int_num}/{intentos}...", flush=True)
         # Reset errors and values for each retry
         result["error"] = None
         result["precio_full_bs"] = None
@@ -121,8 +123,18 @@ def scrape_url(page, url, marca):
                 result["error"] = f"HTTP {response.status}"
                 # Si el producto tiene un código 404 (no existe), no tiene sentido reintentar
                 if response.status == 404:
-                    result["error"] = "Producto no disponible o enlace roto (404)"
+                    result["error"] = "Producto no disponible o enlace roto (404 / Agotado)."
                     return result
+                if response.status == 429:
+                    backoff_sec = 8 * int_num + random.uniform(3, 8)
+                    print(f"   [Hilo {thread_id}] ⚠️ HTTP 429 (Too Many Requests) detectado! Esperando {backoff_sec:.1f}s (Backoff)...", flush=True)
+                    time.sleep(backoff_sec)
+                    continue
+                if response.status == 403:
+                    backoff_sec = 10 * int_num + random.uniform(5, 10)
+                    print(f"   [Hilo {thread_id}] ⚠️ HTTP 403 (Forbidden/Blocked) detectado! Esperando {backoff_sec:.1f}s (Backoff)...", flush=True)
+                    time.sleep(backoff_sec)
+                    continue
                 time.sleep(2)
                 continue
         except PlaywrightTimeout:
@@ -375,7 +387,17 @@ def scrape_url(page, url, marca):
         if data.get("error"):
             result["error"] = data["error"]
             result["nombre"] = data.get("nombre")
-            time.sleep(2)
+            # Si realmente no está disponible (404 / Agotado), retornamos inmediatamente
+            if "enlace roto" in data["error"] or "404" in data["error"] or "disponible" in data["error"]:
+                return result
+            
+            # Si es un bloqueo por Cloudflare/Robots, dormimos más tiempo y reintentamos
+            if "Cloudflare" in data["error"] or "bloqueó" in data["error"]:
+                backoff_sec = 12 * int_num + random.uniform(5, 12)
+                print(f"   [Hilo {thread_id}] ⚠️ Bloqueo de seguridad detectado en contenido. Esperando {backoff_sec:.1f}s...", flush=True)
+                time.sleep(backoff_sec)
+            else:
+                time.sleep(2)
             continue
 
         result["nombre"] = data.get("nombre")
@@ -473,82 +495,192 @@ def main():
         print("No hay URLs activas de Farmatodo para scrapear.")
         sys.exit(0)
 
+    # PARALELISMO SEGURO: Dividir el scraping en hilos concurrentes (máximo 4)
+    NUM_THREADS = 4
+    chunks = [filas_farmatodo[i::NUM_THREADS] for i in range(NUM_THREADS)]
+    chunks = [c for c in chunks if c]  # Filtrar grupos vacíos
+
     print("")
-    print("Scrapeando " + str(len(filas_farmatodo)) + " URLs de Farmatodo...")
+    print(f"Scrapeando {len(filas_farmatodo)} URLs de Farmatodo usando {len(chunks)} hilos concurrentes...")
     print("")
     inicio = time.time()
     resultados = []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1366, "height": 768},
-            locale="es-VE",
-        )
-        page = context.new_page()
-
-        for i, fila in enumerate(filas_farmatodo, 1):
-            marca = str(fila.get("marca", "")).strip() or "?"
-            tipo = str(fila.get("tipo", "")).strip() or "?"
-            url = str(fila.get("url", "")).strip()
-            id_prod = str(fila.get("id_producto_propio", "")).strip()
-
-            print("[" + str(i) + "/" + str(len(filas_farmatodo)) + "] "
-                  + marca + " (" + tipo + ") - " + id_prod, flush=True)
-
-            if not url:
-                print("   SKIP: URL vacia")
-                r = {
-                    "url": "",
-                    "marca": marca,
-                    "nombre": None,
-                    "precio_full_bs": None,
-                    "precio_desc_bs": None,
-                    "tiene_descuento": False,
-                    "scraped_at": datetime.now(timezone.utc).isoformat(),
-                    "error": "URL vacia",
+    def scrape_worker(thread_id, chunk_filas):
+        if not chunk_filas:
+            return []
+        
+        # Inicio escalonado para no saturar al servidor al mismo tiempo
+        delay = (thread_id - 1) * 3.5
+        if delay > 0:
+            print(f"[Hilo {thread_id}] Esperando {delay:.1f}s para inicio escalonado...", flush=True)
+            time.sleep(delay)
+        
+        thread_results = []
+        print(f"[Hilo {thread_id}] Iniciando scraping para {len(chunk_filas)} productos...", flush=True)
+        
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1366, "height": 768},
+                locale="es-VE",
+                extra_http_headers={
+                    "Accept-Language": "es-VE,es;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
                 }
-            else:
-                try:
-                    r = scrape_url(page, url, marca)
-                except Exception as e:
-                    print("   ERROR INESPERADO: " + str(e))
+            )
+            
+            # Ocultar indicador de automatización (burlar detección de headless)
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+            
+            page = context.new_page()
+            
+            # BLOQUEAR RECURSOS INNECESARIOS PARA OPTIMIZAR VELOCIDAD Y REDUCIR BLOQUEOS
+            def block_unnecessary(route):
+                req = route.request
+                res_type = req.resource_type
+                url_lower = req.url.lower()
+                
+                # Bloquear recursos pesados no textuales
+                if res_type in ("image", "media", "font", "websocket"):
+                    route.abort()
+                    return
+                
+                # Bloquear scripts de analíticas, rastreo y telemetría
+                analytics_keywords = (
+                    "google-analytics", "analytics", "google-tag-manager", "googletagmanager", 
+                    "facebook", "connect.facebook.net", "hotjar", "sentry", "datadog", 
+                    "mixpanel", "doubleclick", "adservice", "amplitude"
+                )
+                if any(kw in url_lower for kw in analytics_keywords):
+                    route.abort()
+                    return
+                
+                route.continue_()
+
+            page.route("**/*", block_unnecessary)
+            
+            print(f"[Hilo {thread_id}] Calentando sesión y ubicando (Caracas/Vzla)...", flush=True)
+            try:
+                page.goto("https://www.farmatodo.com.ve", wait_until="domcontentloaded", timeout=35000)
+                time.sleep(4.0)  # Esperar a que carguen popups
+                
+                # Intentar hacer click en el botón de confirmación de ubicación si aparece
+                page.evaluate("""
+                    () => {
+                        const elements = Array.from(document.querySelectorAll('button, a, div, span'));
+                        
+                        // 1. Buscar si hay una opción explícita para Caracas
+                        const caracasBtn = elements.find(b => {
+                            const t = (b.textContent || '').trim().toLowerCase();
+                            return t === 'caracas' || t === 'caracas metropolitana';
+                        });
+                        if (caracasBtn) {
+                            caracasBtn.click();
+                            console.log('Ubicación: Caracas metropolitana seleccionada');
+                            return;
+                        }
+                        
+                        // 2. Buscar botones estándar de confirmación de ubicación de Farmatodo
+                        const confirmarBtn = elements.find(b => {
+                            const t = (b.textContent || '').trim();
+                            return t.includes('Confirmar') || 
+                                   t.includes('Aceptar') || 
+                                   t.includes('Entendido') || 
+                                   t.includes('Sí, aquí') ||
+                                   t.includes('Usar esta ubicación');
+                        });
+                        if (confirmarBtn) {
+                            confirmarBtn.click();
+                            console.log('Ubicación: Confirmada');
+                        }
+                    }
+                """)
+                time.sleep(1.5)
+            except Exception as e:
+                print(f"[Hilo {thread_id}] Advertencia durante el calentamiento de sesión: {e}", flush=True)
+
+            for i, fila in enumerate(chunk_filas, 1):
+                # Intervalo de cortesía aleatorio entre peticiones para evitar bloqueos por tasa
+                if i > 1:
+                    sleep_time = random.uniform(2.0, 4.5)
+                    print(f"[Hilo {thread_id}] Esperando intervalo de cortesía de {sleep_time:.1f}s...", flush=True)
+                    time.sleep(sleep_time)
+
+                marca = str(fila.get("marca", "")).strip() or "?"
+                tipo = str(fila.get("tipo", "")).strip() or "?"
+                url = str(fila.get("url", "")).strip()
+                id_prod = str(fila.get("id_producto_propio", "")).strip()
+
+                print(f"[Hilo {thread_id}] [{i}/{len(chunk_filas)}] {marca} ({tipo}) - {id_prod}", flush=True)
+
+                if not url:
+                    print(f"[Hilo {thread_id}]    SKIP: URL vacía", flush=True)
                     r = {
-                        "url": url,
+                        "url": "",
                         "marca": marca,
                         "nombre": None,
                         "precio_full_bs": None,
                         "precio_desc_bs": None,
                         "tiene_descuento": False,
                         "scraped_at": datetime.now(timezone.utc).isoformat(),
-                        "error": "Error inesperado: " + str(e),
+                        "error": "URL vacia",
                     }
-
-            r["id_producto_propio"] = id_prod
-            r["cadena"] = "Farmatodo"
-            r["tipo"] = tipo
-            r["_doc_id"] = fila.get("_doc_id")
-            r["laboratorio"] = fila.get("laboratorio")
-            resultados.append(r)
-
-            if r["error"]:
-                print("   ERROR: " + r["error"])
-            else:
-                if r["tiene_descuento"]:
-                    pct = (1 - r["precio_desc_bs"] / r["precio_full_bs"]) * 100
-                    print("   OK: Bs " + "{:,.2f}".format(r["precio_full_bs"]) +
-                          " -> Bs " + "{:,.2f}".format(r["precio_desc_bs"]) +
-                          "  (-" + "{:.0f}".format(pct) + "%)")
                 else:
-                    print("   OK: Bs " + "{:,.2f}".format(r["precio_full_bs"]))
-            print("")
+                    try:
+                        r = scrape_url(page, url, marca, thread_id=thread_id)
+                    except Exception as e:
+                        print(f"[Hilo {thread_id}]    ERROR INESPERADO: {e}", flush=True)
+                        r = {
+                            "url": url,
+                            "marca": marca,
+                            "nombre": None,
+                            "precio_full_bs": None,
+                            "precio_desc_bs": None,
+                            "tiene_descuento": False,
+                            "scraped_at": datetime.now(timezone.utc).isoformat(),
+                            "error": "Error inesperado: " + str(e),
+                        }
 
-        browser.close()
+                r["id_producto_propio"] = id_prod
+                r["cadena"] = "Farmatodo"
+                r["tipo"] = tipo
+                r["_doc_id"] = fila.get("_doc_id")
+                r["laboratorio"] = fila.get("laboratorio")
+                thread_results.append(r)
+
+                if r["error"]:
+                    print(f"[Hilo {thread_id}]    ERROR: {r['error']}", flush=True)
+                else:
+                    if r["tiene_descuento"]:
+                        pct = (1 - r["precio_desc_bs"] / r["precio_full_bs"]) * 100
+                        print(f"[Hilo {thread_id}]    OK: Bs {r['precio_full_bs']:,.2f} -> Bs {r['precio_desc_bs']:,.2f} (-{pct:.0f}%)", flush=True)
+                    else:
+                        print(f"[Hilo {thread_id}]    OK: Bs {r['precio_full_bs']:,.2f}", flush=True)
+                print("", flush=True)
+
+            browser.close()
+        return thread_results
+
+    with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+        futures = {executor.submit(scrape_worker, i + 1, chunks[i]): i for i in range(len(chunks))}
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                resultados.extend(res)
+            except Exception as e:
+                print(f"Error crítico en hilo de scraping: {e}", flush=True)
 
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(resultados, f, ensure_ascii=False, indent=2, default=str)

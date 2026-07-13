@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, firebaseConfig } from '../firebase';
+import { initializeApp, deleteApp } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import ConfirmModal from '../components/ConfirmModal';
 
 const ROLES = [
@@ -35,6 +37,7 @@ export default function Usuarios({ userDoc }) {
   useEffect(() => { cargar(); }, []);
 
   const handleSave = async (data, isNew) => {
+    let secondaryApp = null;
     try {
       const email = data.email.trim().toLowerCase();
       if (!email || !/\S+@\S+\.\S+/.test(email)) {
@@ -42,8 +45,22 @@ export default function Usuarios({ userDoc }) {
       }
       const docId = emailToDocId(email);
       if (isNew && usuarios.some(u => u.id === docId)) {
-        throw new Error('Ya existe un usuario con ese email');
+        throw new Error('Ya existe un usuario con ese email en la base de datos');
       }
+
+      if (isNew) {
+        if (!data.password || data.password.length < 6) {
+          throw new Error('La contraseña debe tener al menos 6 caracteres');
+        }
+        // Crear el usuario en Firebase Auth usando una instancia secundaria para no desloguear al administrador actual
+        secondaryApp = initializeApp(firebaseConfig, `secondary-app-${Date.now()}`);
+        const secondaryAuth = getAuth(secondaryApp);
+        await createUserWithEmailAndPassword(secondaryAuth, email, data.password);
+        await signOut(secondaryAuth);
+        await deleteApp(secondaryApp);
+        secondaryApp = null;
+      }
+
       await setDoc(doc(db, 'usuarios', docId), {
         email,
         nombre: data.nombre.trim(),
@@ -52,16 +69,33 @@ export default function Usuarios({ userDoc }) {
         recibe_resumen_diario: data.recibe_resumen_diario,
         activo: data.activo,
       });
+
       setMessage({
         type: 'success',
         text: isNew
-          ? `Usuario creado. IMPORTANTE: este usuario aún NO puede iniciar sesión. Crea su cuenta en Firebase Console con el mismo email.`
+          ? `Usuario creado y registrado correctamente. Ya puede iniciar sesión con su correo y contraseña.`
           : 'Cambios guardados con éxito'
       });
       setEditing(null);
       await cargar();
     } catch (err) {
+      if (secondaryApp) {
+        try { await deleteApp(secondaryApp); } catch (e) {}
+      }
       setMessage({ type: 'error', text: err.message });
+    }
+  };
+
+  const handleSendResetEmail = async (email) => {
+    try {
+      const authInstance = getAuth();
+      await sendPasswordResetEmail(authInstance, email);
+      setMessage({
+        type: 'success',
+        text: `Se ha enviado un correo para restablecer la contraseña a ${email}`
+      });
+    } catch (err) {
+      setMessage({ type: 'error', text: 'Error al enviar correo de restablecimiento: ' + err.message });
     }
   };
 
@@ -134,12 +168,12 @@ export default function Usuarios({ userDoc }) {
       <div className="bg-[#e0e1f9] border border-[#c6c5d2]/40 rounded-2xl px-5 py-4 text-xs text-[#00174c] space-y-1.5 shadow-sm">
         <div className="flex items-center gap-2 font-mono font-bold text-sm text-[#040d53]">
           <span className="material-symbols-outlined text-lg leading-none">info</span>
-          <span>Cómo invitar a un nuevo colaborador</span>
+          <span>Cómo registrar y dar acceso a un colaborador</span>
         </div>
         <ol className="list-decimal ml-5 mt-1 space-y-1 text-xs text-[#464650] font-sans">
-          <li>Haz clic en el botón <strong>"Invitar Usuario"</strong> para registrar el correo y rol en Firestore.</li>
-          <li>Accede a tu Firebase Console → Authentication → Add User para registrar su credencial de login formal con ese mismo correo.</li>
-          <li>Suministra la contraseña de acceso temporal generada para su primer inicio de sesión.</li>
+          <li>Haz clic en el botón <strong>"Invitar Usuario"</strong> para registrar sus datos en Firestore y crear automáticamente su cuenta en Firebase Auth.</li>
+          <li>Especifica una contraseña inicial segura (mínimo 6 caracteres) para que el nuevo colaborador pueda iniciar sesión de inmediato.</li>
+          <li>Si un colaborador olvida su contraseña, haz clic en el botón <strong>"Clave"</strong> junto a su nombre para enviarle un correo automático para restablecerla.</li>
         </ol>
       </div>
 
@@ -217,6 +251,11 @@ export default function Usuarios({ userDoc }) {
                           <span className="material-symbols-outlined text-sm">edit</span>
                           Editar
                         </button>
+                        <button onClick={() => handleSendResetEmail(u.email)}
+                          className="text-xs text-amber-600 hover:text-amber-700 font-bold mr-4 inline-flex items-center gap-1">
+                          <span className="material-symbols-outlined text-sm">lock_reset</span>
+                          Clave
+                        </button>
                         <button onClick={() => handleDelete(u)} disabled={isCurrent}
                           className={`text-xs text-[#93000a] hover:text-[#93000a]/80 font-bold inline-flex items-center gap-1 ${
                             isCurrent ? 'opacity-30 cursor-not-allowed' : ''
@@ -266,6 +305,7 @@ function UsuarioModal({ usuario, onSave, onClose }) {
   const [form, setForm] = useState({
     email: usuario?.email || '',
     nombre: usuario?.nombre || '',
+    password: '',
     rol: usuario?.rol || 'lector',
     recibe_alertas_inmediatas: usuario?.recibe_alertas_inmediatas ?? false,
     recibe_resumen_diario: usuario?.recibe_resumen_diario ?? true,
@@ -303,6 +343,14 @@ function UsuarioModal({ usuario, onSave, onClose }) {
               placeholder="Ej. Juan Pérez"
               className="w-full px-4 py-2 border border-[#c6c5d2] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#040d53]/25 focus:border-[#040d53] font-sans text-sm text-[#1c1b1f]" />
           </Field>
+          {isNew && (
+            <Field label="Contraseña de Acceso (mínimo 6 carácteres) *">
+              <input type="password" required minLength={6} value={form.password}
+                onChange={e => handleChange('password', e.target.value)}
+                placeholder="Ingresa la contraseña del nuevo usuario"
+                className="w-full px-4 py-2 border border-[#c6c5d2] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#040d53]/25 focus:border-[#040d53] font-sans text-sm text-[#1c1b1f]" />
+            </Field>
+          )}
           <Field label="Rol Autorizado *">
             <div className="space-y-2">
               {ROLES.map(r => (
