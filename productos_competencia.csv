@@ -2,7 +2,7 @@ id_producto_propio;cadena;tipo;marca;url;activo;;
 P001;Farmatodo;propio;La Sante;https://www.farmatodo.com.ve/producto/111243559-acetaminofen-650-mg-x-10-tabletas-la-sante;si;;
 P001;Farmatodo;alternativa;Calox;https://www.farmatodo.com.ve/producto/114592534-acetaminofen-650mg-10-tabletas-calox;si;;
 P001;Farmatodo;alternativa;Atamel;https://www.farmatodo.com.ve/producto/114994402-acetaminofen-500-mg-atamel-x-20-tabletas;si;;
-P005;Farmatodo;propio;La Sante;https://www.farmatodo.com.ve/producto/112000443-vitamina-c-500mg-10tabletas-masticables-la-sante;Analgesicos;1;si
-P005;Farmatodo;alternativa;Leti;https://www.farmatodo.com.ve/producto/115523573-letisan-vitamina-c-500mg;;;
-P005;Farmatodo;alternativa;Calox;https://www.farmatodo.com.ve/producto/111024901-vitamina-c-cevax-500-mg-x-30-capsulas;;;
+P005;Farmatodo;propio;La Sante;https://www.farmatodo.com.ve/producto/112000443-vitamina-c-500mg-10tabletas-masticables-la-sante;si;;
+P005;Farmatodo;alternativa;Leti;https://www.farmatodo.com.ve/producto/115523573-letisan-vitamina-c-500mg;si;;
+P005;Farmatodo;alternativa;Calox;https://www.farmatodo.com.ve/producto/111024901-vitamina-c-cevax-500-mg-x-30-capsulas;si;;
 P005;Farmatodo;alternativa;Fcfarma;Vitamina C 500mg FC Pharma Caja x 15 Cápsulas;;;
