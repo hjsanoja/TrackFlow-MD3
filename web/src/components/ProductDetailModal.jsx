@@ -27,7 +27,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
         docs.sort((a, b) => (a.scraped_at?.getTime() || 0) - (b.scraped_at?.getTime() || 0));
         setHistorico(docs);
       } catch (err) {
-        console.error('Error cargando histórico:', err);
+        console.error('Error cargando histórico:', err.message || err);
         setError(err.message);
       }
       setLoading(false);

@@ -52,7 +52,7 @@ export default function Dashboard({ user, userDoc }) {
       }).sort((a,b) => a.rawDate - b.rawDate).slice(-10)); // Last 10 rates
 
     } catch (err) {
-      console.error('Error cargando panel:', err);
+      console.error('Error cargando panel:', err.message || err);
     }
     setLoading(false);
   };
@@ -365,12 +365,12 @@ export default function Dashboard({ user, userDoc }) {
 
       {/* Volatility Warning Alert */}
       {altaVolatilidad.length > 0 && (
-        <div className="bg-error-container/40 border border-error/20 rounded-3xl p-5 space-y-3 shadow-sm">
+        <div className="bg-[#ffdad6]/40 border border-[#ffdad6] rounded-3xl p-5 space-y-3 shadow-sm">
           <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-xl text-error">warning</span>
-            <h3 className="font-extrabold text-error text-sm">Productos con Alta Dispersión de Precios (Volatilidad >20%)</h3>
+            <span className="material-symbols-outlined text-xl text-[#93000a]">warning</span>
+            <h3 className="font-extrabold text-[#93000a] text-sm">Productos con Alta Dispersión de Precios (Volatilidad >20%)</h3>
           </div>
-          <p className="text-xs text-on-error-container">
+          <p className="text-xs text-[#93000a]/90">
             Los siguientes medicamentos presentan variaciones de precios muy altas entre las cadenas. Esto significa que hay oportunidades críticas de ahorro comprando en el proveedor líder.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
