@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
+import { collection, query, where, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
+import ConfirmModal from './ConfirmModal';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
@@ -11,6 +12,33 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [clearing, setClearing] = useState(false);
+
+  const handleClearHistory = async () => {
+    setClearing(true);
+    try {
+      const q = query(
+        collection(db, 'historico_precios'),
+        where('id_producto_propio', '==', producto.id_interno)
+      );
+      const snap = await getDocs(q);
+      const docs = snap.docs;
+      
+      for (let i = 0; i < docs.length; i += 500) {
+        const chunk = docs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      setHistorico([]);
+    } catch (err) {
+      console.error('Error clearing product history:', err);
+    }
+    setClearing(false);
+    setShowClearConfirm(false);
+  };
 
   useEffect(() => {
     (async () => {
@@ -59,6 +87,31 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
     };
   })();
 
+  // Calculations for smart indicators
+  const validPrices = competencia
+    .map(c => {
+      const pBs = c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs;
+      return pBs ? { cadena: c.cadena, marca: c.marca, priceBs: pBs, tipo: c.tipo } : null;
+    })
+    .filter(Boolean);
+
+  const minPriceItem = validPrices.length > 0 
+    ? validPrices.reduce((prev, curr) => (prev.priceBs < curr.priceBs) ? prev : curr)
+    : null;
+
+  const avgPriceBs = validPrices.length > 0
+    ? validPrices.reduce((sum, item) => sum + item.priceBs, 0) / validPrices.length
+    : null;
+
+  const propioItem = competencia.find(c => c.tipo === 'propio');
+  const propioPriceBs = propioItem ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs) : null;
+
+  const diffMinBs = (propioPriceBs !== null && minPriceItem !== null) ? propioPriceBs - minPriceItem.priceBs : null;
+  const pctMin = (diffMinBs !== null && minPriceItem.priceBs > 0) ? (diffMinBs / minPriceItem.priceBs) * 100 : null;
+
+  const diffAvgBs = (propioPriceBs !== null && avgPriceBs !== null) ? propioPriceBs - avgPriceBs : null;
+  const pctAvg = (diffAvgBs !== null && avgPriceBs > 0) ? (diffAvgBs / avgPriceBs) * 100 : null;
+
   const formatHeaderPrice = (priceBs) => {
     if (priceBs == null) return '—';
     if (currency === 'usd') {
@@ -87,6 +140,67 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
         {/* Content Area */}
         <div className="p-6 space-y-6 overflow-y-auto">
+          {/* Smart Indicators Card Grid */}
+          {validPrices.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 animate-fade-in">
+              {/* Mas Barato Card */}
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
+                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Más Barato (Mercado)</span>
+                <div className="text-lg font-display font-extrabold text-[#70C145]">
+                  {formatHeaderPrice(minPriceItem?.priceBs)}
+                </div>
+                <p className="text-[10px] text-[#464650] truncate font-semibold">
+                  En: {minPriceItem?.cadena} ({minPriceItem?.marca})
+                </p>
+              </div>
+
+              {/* Mi Precio Card */}
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
+                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Mi Precio (Marca Propia)</span>
+                <div className="text-lg font-display font-extrabold text-[#040d53]">
+                  {propioPriceBs ? formatHeaderPrice(propioPriceBs) : '—'}
+                </div>
+                <p className="text-[10px] text-[#464650] font-semibold truncate">
+                  {propioItem ? `Marca: ${propioItem.marca}` : 'No vinculado'}
+                </p>
+              </div>
+
+              {/* vs Minimo Card */}
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
+                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Mínimo</span>
+                {propioPriceBs && minPriceItem ? (
+                  <>
+                    <div className={`text-lg font-display font-extrabold ${pctMin && pctMin > 0.1 ? 'text-[#ba1a1a]' : 'text-[#70C145]'}`}>
+                      {pctMin && pctMin > 0.1 ? `+${pctMin.toFixed(1)}%` : '¡Precio Mínimo!'}
+                    </div>
+                    <p className="text-[10px] text-[#464650] font-semibold">
+                      {pctMin && pctMin > 0.1 ? `+${formatHeaderPrice(diffMinBs)} vs el más barato` : 'Líder en este producto'}
+                    </p>
+                  </>
+                ) : (
+                  <div className="text-lg font-display font-bold text-gray-300">—</div>
+                )}
+              </div>
+
+              {/* vs Promedio Card */}
+              <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
+                <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Promedio</span>
+                {propioPriceBs && avgPriceBs ? (
+                  <>
+                    <div className={`text-lg font-display font-extrabold ${pctAvg && pctAvg > 0 ? 'text-[#ba1a1a]' : 'text-[#70C145]'}`}>
+                      {pctAvg && pctAvg > 0 ? `+${pctAvg.toFixed(1)}%` : `${pctAvg?.toFixed(1)}%`}
+                    </div>
+                    <p className="text-[10px] text-[#464650] font-semibold font-mono leading-none">
+                      {pctAvg && pctAvg > 0 ? `+${formatHeaderPrice(diffAvgBs)} vs promedio` : `${formatHeaderPrice(diffAvgBs)} vs promedio`}
+                    </p>
+                  </>
+                ) : (
+                  <div className="text-lg font-display font-bold text-gray-300">—</div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Current Competitor Prices Table */}
           <div className="space-y-2">
             <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
@@ -139,10 +253,21 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
           {/* Historical Trend Chart */}
           <div className="space-y-2">
-            <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-sm">show_chart</span>
-              Historial de Tendencia de Precios ({currency === 'usd' ? 'USD $' : 'Bs'})
-            </h3>
+            <div className="flex justify-between items-center">
+              <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-sm">show_chart</span>
+                Historial de Tendencia de Precios ({currency === 'usd' ? 'USD $' : 'Bs'})
+              </h3>
+              {historico.length > 0 && (
+                <button
+                  onClick={() => setShowClearConfirm(true)}
+                  className="text-[10px] font-bold text-[#ba1a1a] hover:bg-red-50 px-3 py-1 rounded-full border border-red-200 transition-all flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-[12px]">delete</span>
+                  Borrar histórico
+                </button>
+              )}
+            </div>
             <div className="bg-white rounded-2xl border border-[#e1e2ec] p-4 shadow-sm">
               {loading ? (
                 <div className="h-64 flex flex-col items-center justify-center text-xs text-[#464650] font-semibold gap-1.5 animate-pulse">
@@ -190,6 +315,18 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
             Cerrar Modal
           </button>
         </div>
+
+        {/* Clear Product History Dialog */}
+        <ConfirmModal
+          isOpen={showClearConfirm}
+          title="¿Borrar Historial del Producto?"
+          message={`¿Estás seguro de que deseas eliminar TODOS los registros de precios históricos para "${producto.nombre}"?\n\nEsta acción no afectará la información actual del producto ni de sus competidores, pero vaciará el gráfico de tendencias.`}
+          confirmText={clearing ? 'Borrando...' : 'Borrar'}
+          cancelText="Cancelar"
+          isDanger={true}
+          onConfirm={handleClearHistory}
+          onCancel={() => setShowClearConfirm(false)}
+        />
       </div>
     </div>
   );

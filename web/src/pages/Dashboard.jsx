@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
-import { collection, getDocs, query, orderBy, limit, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, doc, getDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useBcvRate } from '../hooks/useBcvRate';
 import ProductDetailModal from '../components/ProductDetailModal';
+import ConfirmModal from '../components/ConfirmModal';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   BarChart, Bar, Cell, Legend
@@ -20,6 +21,8 @@ export default function Dashboard({ user, userDoc }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState(null);
+  const [showClearHistoryConfirm, setShowClearHistoryConfirm] = useState(false);
+  const [clearingHistory, setClearingHistory] = useState(false);
 
   const bcv = useBcvRate();
   const isAdmin = userDoc?.rol === 'administrador';
@@ -42,14 +45,32 @@ export default function Dashboard({ user, userDoc }) {
         setUltimaCorrida({ ...data, started_at: data.started_at?.toDate?.() || null });
       }
 
-      setBcvHistorico(bcvSnap.docs.map(d => {
+      const rawRates = bcvSnap.docs.map(d => {
         const data = d.data();
+        const dateObj = data.updated_at?.toDate?.() || new Date();
         return {
-          fecha: data.updated_at?.toDate?.().toLocaleDateString('es-VE', { month: 'short', day: 'numeric' }) || '—',
+          dayKey: dateObj.toLocaleDateString('es-VE', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+          fecha: dateObj.toLocaleDateString('es-VE', { month: 'short', day: 'numeric' }) || '—',
           valor: data.value,
-          rawDate: data.updated_at?.toDate?.() || new Date()
+          rawDate: dateObj
         };
-      }).sort((a,b) => a.rawDate - b.rawDate).slice(-10)); // Last 10 rates
+      });
+
+      // Group by dayKey and keep only the latest one
+      const ratesByDay = {};
+      rawRates.forEach(rate => {
+        const existing = ratesByDay[rate.dayKey];
+        if (!existing || rate.rawDate > existing.rawDate) {
+          ratesByDay[rate.dayKey] = rate;
+        }
+      });
+
+      // Sort chronological and take the last 10 unique days
+      const uniqueDaysRates = Object.values(ratesByDay)
+        .sort((a, b) => a.rawDate - b.rawDate)
+        .slice(-10);
+
+      setBcvHistorico(uniqueDaysRates);
 
     } catch (err) {
       console.error('Error cargando panel:', err.message || err);
@@ -93,6 +114,42 @@ export default function Dashboard({ user, userDoc }) {
       setRefreshMessage({ type: 'error', text: 'Error al disparar scraper: ' + err.message });
     }
     setRefreshing(false);
+  };
+
+  const handleClearAllHistory = async () => {
+    setClearingHistory(true);
+    try {
+      const q = query(collection(db, 'historico_precios'));
+      const snap = await getDocs(q);
+      const docs = snap.docs;
+      
+      for (let i = 0; i < docs.length; i += 500) {
+        const chunk = docs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // Clear execution runs logs too
+      const runsQ = query(collection(db, 'scrape_runs'));
+      const runsSnap = await getDocs(runsQ);
+      const runsDocs = runsSnap.docs;
+      for (let i = 0; i < runsDocs.length; i += 500) {
+        const chunk = runsDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      setUltimaCorrida(null);
+      setRefreshMessage({ type: 'success', text: 'Historial de precios y análisis de scraper vaciados con éxito.' });
+      await cargarDatos();
+    } catch (err) {
+      console.error('Error al borrar historial:', err);
+      setRefreshMessage({ type: 'error', text: 'Error al borrar historial: ' + err.message });
+    }
+    setClearingHistory(false);
+    setShowClearHistoryConfirm(false);
   };
 
   // Unique categories for filtering
@@ -145,6 +202,19 @@ export default function Dashboard({ user, userDoc }) {
           .filter(x => Math.abs(x.priceUsd - maxCompUsd) < 0.001)
           .map(x => x.cadena);
 
+        // Find own price
+        const propioItem = compItems.find(c => c.tipo === 'propio');
+        const propioPriceBs = propioItem ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs) : null;
+        const propioPriceUsd = (propioPriceBs && bcv.rate) ? (propioPriceBs / bcv.rate) : null;
+
+        // Difference vs cheapest (minCompUsd)
+        const diffMinUsd = (propioPriceUsd !== null && minCompUsd !== null) ? propioPriceUsd - minCompUsd : null;
+        const diffMinPercent = (diffMinUsd !== null && minCompUsd > 0) ? (diffMinUsd / minCompUsd) * 100 : null;
+
+        // Difference vs average (avgCompUsd)
+        const diffAvgUsd = (propioPriceUsd !== null && avgCompUsd !== null) ? propioPriceUsd - avgCompUsd : null;
+        const diffAvgPercent = (diffAvgUsd !== null && avgCompUsd > 0) ? (diffAvgUsd / avgCompUsd) * 100 : null;
+
         return {
           producto: p,
           competencia: compItems,
@@ -155,6 +225,11 @@ export default function Dashboard({ user, userDoc }) {
           dispersionPercent,
           cheapestChains,
           mostExpensiveChains,
+          propioPriceUsd,
+          diffMinUsd,
+          diffMinPercent,
+          diffAvgUsd,
+          diffAvgPercent,
         };
       });
   }, [productos, productosCompetencia, bcv.rate]);
@@ -317,6 +392,14 @@ export default function Dashboard({ user, userDoc }) {
             <span className="material-symbols-outlined text-base">download</span>
             Exportar CSV
           </button>
+
+          {isAdmin && (
+            <button onClick={() => setShowClearHistoryConfirm(true)}
+              className="text-xs font-bold bg-white border border-error/30 hover:bg-error-container/10 active:bg-error-container/20 px-4 py-2.5 rounded-full text-error transition-all flex items-center gap-1.5 shadow-sm">
+              <span className="material-symbols-outlined text-base">delete_sweep</span>
+              Borrar Historial
+            </button>
+          )}
         </div>
       </div>
 
@@ -478,7 +561,8 @@ export default function Dashboard({ user, userDoc }) {
                 ))}
                 <th className="px-6 py-4 font-bold text-right border-l border-surface-variant">Promedio</th>
                 <th className="px-6 py-4 font-bold text-right">Mínimo</th>
-                <th className="px-6 py-4 font-bold text-right">Máximo</th>
+                <th className="px-6 py-4 font-bold text-right bg-primary-container/10 text-primary font-bold">Mi Precio</th>
+                <th className="px-6 py-4 font-bold text-right text-secondary">Mi Desviación</th>
                 <th className="px-6 py-4 font-bold text-center">Dispersión (%)</th>
               </tr>
             </thead>
@@ -490,7 +574,7 @@ export default function Dashboard({ user, userDoc }) {
                   </td>
                 </tr>
               ) : (
-                filas.map(({ producto, competencia, chainPrices, avgCompUsd, minCompUsd, maxCompUsd, dispersionPercent, cheapestChains }) => {
+                filas.map(({ producto, competencia, chainPrices, avgCompUsd, minCompUsd, maxCompUsd, dispersionPercent, cheapestChains, propioPriceUsd, diffMinPercent, diffAvgPercent }) => {
                   return (
                     <tr key={producto.id_interno} onClick={() => setSelectedProduct({ producto, competencia })}
                       className="hover:bg-surface-low cursor-pointer transition-colors">
@@ -533,9 +617,25 @@ export default function Dashboard({ user, userDoc }) {
                         {minCompUsd ? fmt(minCompUsd) : '—'}
                       </td>
 
-                      {/* Max Price */}
-                      <td className="px-6 py-4 text-right font-mono text-xs text-error font-semibold">
-                        {maxCompUsd ? fmt(maxCompUsd) : '—'}
+                      {/* Mi Precio */}
+                      <td className="px-6 py-4 text-right font-mono text-xs text-primary font-extrabold bg-primary-container/5">
+                        {propioPriceUsd ? fmt(propioPriceUsd) : '—'}
+                      </td>
+
+                      {/* Mi Desviación */}
+                      <td className="px-6 py-4 text-right whitespace-nowrap bg-surface-low/30 border-r border-surface-variant">
+                        {propioPriceUsd ? (
+                          <div className="flex flex-col items-end gap-0.5 text-[10px] font-mono leading-none">
+                            <span className={diffMinPercent && diffMinPercent > 0.1 ? 'text-error font-extrabold' : 'text-secondary font-extrabold'}>
+                              {diffMinPercent && diffMinPercent > 0.1 ? `vs Mín: +${diffMinPercent.toFixed(1)}%` : 'vs Mín: Mismo'}
+                            </span>
+                            <span className={diffAvgPercent && diffAvgPercent > 0 ? 'text-error/80 font-bold' : 'text-secondary/80 font-bold'}>
+                              {diffAvgPercent && diffAvgPercent > 0 ? `vs Prom: +${diffAvgPercent.toFixed(1)}%` : `vs Prom: -${Math.abs(diffAvgPercent || 0).toFixed(1)}%`}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-300 font-mono select-none">—</span>
+                        )}
                       </td>
 
                       {/* Dispersion Column */}
@@ -566,6 +666,18 @@ export default function Dashboard({ user, userDoc }) {
           onClose={() => setSelectedProduct(null)}
         />
       )}
+
+      {/* Clear History Confirmation Dialog */}
+      <ConfirmModal
+        isOpen={showClearHistoryConfirm}
+        title="¿Borrar Todo el Historial?"
+        message={`¿Estás seguro de que deseas eliminar TODOS los registros históricos de precios de todos los productos?\n\nEsta acción eliminará todas las tendencias y los logs de ejecución acumulados, reseteando las estadísticas a cero.\n\nLos productos, cadenas y URLs de competencia se conservarán intactos.`}
+        confirmText={clearingHistory ? 'Borrando...' : 'Borrar Todo'}
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleClearAllHistory}
+        onCancel={() => setShowClearHistoryConfirm(false)}
+      />
     </div>
   );
 }
