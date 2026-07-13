@@ -125,12 +125,40 @@ def scrape_url(page, url, marca):
         print("   Extrayendo datos...", flush=True)
         data = page.evaluate("""
             () => {
-                const active = document.querySelector('span.product-purchase__price--active');
-                const original = document.querySelector('del.product-purchase__price--original');
+                const active = document.querySelector('span.product-purchase__price--active') || 
+                               document.querySelector('[class*="price--active"]') ||
+                               document.querySelector('.product-purchase__price');
+                const original = document.querySelector('del.product-purchase__price--original') ||
+                                 document.querySelector('del') ||
+                                 document.querySelector('[class*="price--original"]') ||
+                                 document.querySelector('.product-purchase__price-original');
                 const h1 = document.querySelector('h1');
+                
+                let active_text = active ? (active.innerText || active.textContent || '').trim() : null;
+                let original_text = original ? (original.innerText || original.textContent || '').trim() : null;
+                
+                // Fallback robust check: if original price is not found but there are multiple price elements
+                if (!original_text && active) {
+                    const container = active.closest('.product-purchase__price-container') || active.parentElement;
+                    if (container) {
+                        const allText = (container.innerText || container.textContent || '');
+                        const prices = allText.match(/Bs\.?\s*[\d.,]+/g) || [];
+                        if (prices.length > 1) {
+                            const activeClean = active_text.replace(/[^\d]/g, '');
+                            for (const p of prices) {
+                                const pClean = p.replace(/[^\d]/g, '');
+                                if (activeClean && pClean !== activeClean) {
+                                    original_text = p;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                
                 return {
-                    active_text: active ? (active.innerText || active.textContent || '').trim() : null,
-                    original_text: original ? (original.innerText || original.textContent || '').trim() : null,
+                    active_text: active_text,
+                    original_text: original_text,
                     nombre: h1 ? (h1.innerText || h1.textContent || '').trim() : null,
                 };
             }

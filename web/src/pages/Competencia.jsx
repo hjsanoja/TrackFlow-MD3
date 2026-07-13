@@ -107,6 +107,9 @@ export default function Competencia() {
         marca: data.marca.trim(),
         url: data.url.trim(),
         activo: data.activo,
+        laboratorio: data.laboratorio?.trim() || '',
+        concentracion: data.concentracion?.trim() || '',
+        tamano: data.tamano?.trim() || '',
       }, { merge: !isNew });
       setMessage({ type: 'success', text: isNew ? 'URL de competencia creada con éxito' : 'Cambios guardados con éxito' });
       setEditing(null);
@@ -390,7 +393,12 @@ export default function Competencia() {
                     </td>
                     <td className="px-6 py-4 font-bold text-primary">{it.cadena}</td>
                     <td className="px-6 py-4">
-                      <div className="font-bold text-on-surface text-sm">{it.marca}</div>
+                      <div className="font-bold text-on-surface text-sm">
+                        {it.marca} {it.concentracion || ''} {it.tamano || ''}
+                      </div>
+                      {it.laboratorio && (
+                        <div className="text-[10px] text-on-surface-variant font-medium mt-0.5">Lab: {it.laboratorio}</div>
+                      )}
                       <a href={it.url} target="_blank" rel="noopener noreferrer"
                         className="text-xs text-primary hover:underline truncate max-w-xs font-mono mt-0.5 flex items-center gap-0.5" title={it.url}>
                         <span>Ver Enlace Destino</span>
@@ -398,8 +406,8 @@ export default function Competencia() {
                       </a>
                     </td>
                     <td className="px-6 py-4">
-                      <span className={`text-[10px] uppercase font-mono font-bold px-2.5 py-1 rounded-full ${
-                        it.tipo === 'propio' ? 'bg-primary-container text-on-primary-container' : 'bg-surface-low text-on-surface-variant border border-outline-variant'
+                      <span className={`text-[10px] uppercase font-mono font-bold px-2.5 py-1 rounded-full border ${
+                        it.tipo === 'propio' ? 'bg-[#e8f5e9] text-[#2e7d32] border-[#a5d6a7]' : 'bg-surface-low text-on-surface-variant border-outline-variant'
                       }`}>
                         {it.tipo === 'propio' ? 'Mi Marca' : 'Competencia'}
                       </span>
@@ -557,6 +565,9 @@ function CompetenciaModal({ item, productoIdPreseleccionado, productos, cadenas,
     marca: item?.marca || '',
     url: item?.url || '',
     activo: item?.activo ?? true,
+    laboratorio: item?.laboratorio || '',
+    concentracion: item?.concentracion || '',
+    tamano: item?.tamano || '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -614,13 +625,38 @@ function CompetenciaModal({ item, productoIdPreseleccionado, productos, cadenas,
             </Field>
           </div>
 
-          <Field label="Nombre Comercial en Competidor *" hint="Ej. Acetaminofén Genérico Farmatodo">
-            <input type="text" required value={form.marca}
-              onChange={e => handleChange('marca', e.target.value)}
-              disabled={!isNew}
-              placeholder="Ej. Atamel 500mg"
-              className="w-full px-4 py-2 border border-outline-variant rounded-xl disabled:bg-surface-low focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary font-sans text-sm text-on-surface" />
-          </Field>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Nombre Comercial / Marca *" hint="Ej. Acetaminofén, Atamel">
+              <input type="text" required value={form.marca}
+                onChange={e => handleChange('marca', e.target.value)}
+                disabled={!isNew}
+                placeholder="Ej. Atamel"
+                className="w-full px-4 py-2 border border-outline-variant rounded-xl disabled:bg-surface-low focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary font-sans text-sm text-on-surface" />
+            </Field>
+
+            <Field label="Laboratorio / Fabricante" hint="Ej. Genven, La Santé">
+              <input type="text" value={form.laboratorio}
+                onChange={e => handleChange('laboratorio', e.target.value)}
+                placeholder="Ej. Genven"
+                className="w-full px-4 py-2 border border-outline-variant rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary font-sans text-sm text-on-surface" />
+            </Field>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="Concentración" hint="Ej. 650mg, 500mg">
+              <input type="text" value={form.concentracion}
+                onChange={e => handleChange('concentracion', e.target.value)}
+                placeholder="Ej. 650mg"
+                className="w-full px-4 py-2 border border-outline-variant rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary font-sans text-sm text-on-surface" />
+            </Field>
+
+            <Field label="Tamaño / Presentación" hint="Ej. 10tab, 20tab, 120ml">
+              <input type="text" value={form.tamano}
+                onChange={e => handleChange('tamano', e.target.value)}
+                placeholder="Ej. 10tab"
+                className="w-full px-4 py-2 border border-outline-variant rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary font-sans text-sm text-on-surface" />
+            </Field>
+          </div>
 
           <Field label="Dirección URL del Producto *" hint="Dirección exacta para el robot de extracción">
             <div className="flex gap-2">

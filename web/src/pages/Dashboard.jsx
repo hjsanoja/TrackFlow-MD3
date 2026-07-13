@@ -561,7 +561,7 @@ export default function Dashboard({ user, userDoc }) {
                 ))}
                 <th className="px-6 py-4 font-bold text-right border-l border-surface-variant">Promedio</th>
                 <th className="px-6 py-4 font-bold text-right">Mínimo</th>
-                <th className="px-6 py-4 font-bold text-right bg-primary-container/10 text-primary font-bold">Mi Precio</th>
+                <th className="px-6 py-4 font-bold text-right bg-green-500/10 text-green-700 font-bold border-l border-green-500/10">Mi Precio</th>
                 <th className="px-6 py-4 font-bold text-right text-secondary">Mi Desviación</th>
                 <th className="px-6 py-4 font-bold text-center">Dispersión (%)</th>
               </tr>
@@ -618,7 +618,7 @@ export default function Dashboard({ user, userDoc }) {
                       </td>
 
                       {/* Mi Precio */}
-                      <td className="px-6 py-4 text-right font-mono text-xs text-primary font-extrabold bg-primary-container/5">
+                      <td className="px-6 py-4 text-right font-mono text-xs text-green-700 font-extrabold bg-green-500/5 border-l border-green-500/10">
                         {propioPriceUsd ? fmt(propioPriceUsd) : '—'}
                       </td>
 

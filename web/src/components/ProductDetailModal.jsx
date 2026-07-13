@@ -157,7 +157,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               {/* Mi Precio Card */}
               <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1">
                 <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Mi Precio (Marca Propia)</span>
-                <div className="text-lg font-display font-extrabold text-[#040d53]">
+                <div className="text-lg font-display font-extrabold text-[#70C145]">
                   {propioPriceBs ? formatHeaderPrice(propioPriceBs) : '—'}
                 </div>
                 <p className="text-[10px] text-[#464650] font-semibold truncate">
@@ -229,10 +229,15 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                     competencia.map(pc => (
                       <tr key={pc.id} className="hover:bg-[#f8f9fa] transition-colors">
                         <td className="px-5 py-3 font-bold text-[#040d53]">{pc.cadena}</td>
-                        <td className="px-5 py-3 font-semibold text-[#1c1b1f]">{pc.marca}</td>
+                        <td className="px-5 py-3 font-semibold text-[#1c1b1f]">
+                          <div>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</div>
+                          {pc.laboratorio && (
+                            <div className="text-[10px] text-[#464650] font-normal mt-0.5">Lab: {pc.laboratorio}</div>
+                          )}
+                        </td>
                         <td className="px-5 py-3">
                           <span className={`text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded-full ${
-                            pc.tipo === 'propio' ? 'bg-[#e0e1f9] text-[#040d53]' : 'bg-[#f3f4f9] text-[#464650] border border-[#e1e2ec]'
+                            pc.tipo === 'propio' ? 'bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7]' : 'bg-[#f3f4f9] text-[#464650] border border-[#e1e2ec]'
                           }`}>
                             {pc.tipo === 'propio' ? 'Mi Marca' : 'Competencia'}
                           </span>
