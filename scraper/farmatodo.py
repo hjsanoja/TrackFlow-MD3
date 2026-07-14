@@ -207,28 +207,18 @@ def scrape_url(page, url, marca, thread_id=1):
 
         print("   Esperando contenido...", flush=True)
         try:
-            # Esperar a que el h1 de la página esté cargado
-            page.wait_for_selector("h1", timeout=8000)
+            # Esperar a que el h1, la clase de precio o el texto "Bs" se carguen (lo que ocurra primero)
+            # Esto evita esperas secuenciales lentas y optimiza el tiempo de respuesta.
+            page.wait_for_selector("h1, .product-purchase__price, [class*='price'], text=/Bs/i", timeout=4000)
         except PlaywrightTimeout:
             pass
-
-        # CRÍTICO: Esperar de forma inteligente a que los precios se carguen vía llamadas asíncronas
-        try:
-            # Esperamos hasta 6 segundos que el texto "Bs" (común en Farmatodo Vzla) se renderice en el DOM
-            page.wait_for_selector("text=/Bs/i", timeout=6000)
-        except PlaywrightTimeout:
-            # Si no aparece "Bs", esperamos por cualquier selector de clase que contenga "price"
-            try:
-                page.wait_for_selector(".product-purchase__price, [class*='price']", timeout=3000)
-            except PlaywrightTimeout:
-                pass
 
         # Desplazamiento sutil para simular actividad del usuario y gatillar hidratación de React/Next.js
         try:
             page.evaluate("window.scrollTo(0, 300)")
-            time.sleep(1.0)
+            time.sleep(0.4)
             page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(1.0)
+            time.sleep(0.4)
         except Exception:
             pass
 
@@ -554,8 +544,8 @@ def scrape_url(page, url, marca, thread_id=1):
         precio_closest_ref = parse_price_usd(data.get("closest_ref_price"))
 
         # Determinar si el precio activo o original están en USD
-        is_active_usd = is_usd_text(active_text_raw) or (precio_activo is not None and "farmaciasaas" in url_orig.lower() and precio_activo < 20.0)
-        is_original_usd = is_usd_text(original_text_raw) or (precio_original is not None and "farmaciasaas" in url_orig.lower() and precio_original < 20.0)
+        is_active_usd = is_usd_text(active_text_raw) or (precio_activo is not None and "farmaciasaas" in url.lower() and precio_activo < 20.0)
+        is_original_usd = is_usd_text(original_text_raw) or (precio_original is not None and "farmaciasaas" in url.lower() and precio_original < 20.0)
 
         if is_active_usd:
             # Si el precio activo está en USD, preferimos usar el precio en Bolívares que encontramos en la página.
@@ -787,8 +777,8 @@ def main():
         print("No hay URLs activas de Farmatodo/Locatel/SAAS para scrapear.")
         sys.exit(0)
 
-    # PARALELISMO SEGURO: Dividir el scraping en hilos concurrentes (máximo 4)
-    NUM_THREADS = 4
+    # PARALELISMO SEGURO: Dividir el scraping en hilos concurrentes (máximo 6)
+    NUM_THREADS = 6
     chunks = [filas_farmatodo[i::NUM_THREADS] for i in range(NUM_THREADS)]
     chunks = [c for c in chunks if c]  # Filtrar grupos vacíos
 
@@ -803,7 +793,7 @@ def main():
             return []
         
         # Inicio escalonado para no saturar al servidor al mismo tiempo
-        delay = (thread_id - 1) * 3.5
+        delay = (thread_id - 1) * 2.5
         if delay > 0:
             print(f"[Hilo {thread_id}] Esperando {delay:.1f}s para inicio escalonado...", flush=True)
             time.sleep(delay)
@@ -844,8 +834,8 @@ def main():
                 res_type = req.resource_type
                 url_lower = req.url.lower()
                 
-                # Bloquear recursos pesados no textuales
-                if res_type in ("image", "media", "font", "websocket"):
+                # Bloquear recursos pesados no textuales y hojas de estilo (CSS)
+                if res_type in ("image", "media", "font", "websocket", "stylesheet"):
                     route.abort()
                     return
                 
@@ -906,7 +896,7 @@ def main():
             for i, fila in enumerate(chunk_filas, 1):
                 # Intervalo de cortesía aleatorio entre peticiones para evitar bloqueos por tasa
                 if i > 1:
-                    sleep_time = random.uniform(2.0, 4.5)
+                    sleep_time = random.uniform(1.2, 2.5)
                     print(f"[Hilo {thread_id}] Esperando intervalo de cortesía de {sleep_time:.1f}s...", flush=True)
                     time.sleep(sleep_time)
 
@@ -1013,7 +1003,7 @@ def main():
                 req = route.request
                 res_type = req.resource_type
                 url_lower = req.url.lower()
-                if res_type in ("image", "media", "font", "websocket"):
+                if res_type in ("image", "media", "font", "websocket", "stylesheet"):
                     route.abort()
                     return
                 analytics_keywords = (
