@@ -94,7 +94,7 @@ export default function Layout({ user, userDoc, children }) {
               Desarrollador: <span className="font-bold text-primary">Hernando Sanoja</span>
             </span>
             <span className="text-[9px] text-on-surface-variant/70 font-mono">
-              Versión V7.0.0.1
+              Versión V7.0.0.2
             </span>
           </div>
         </div>

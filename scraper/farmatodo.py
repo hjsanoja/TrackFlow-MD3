@@ -437,6 +437,96 @@ def scrape_url(page, url, marca, thread_id=1):
     return result
 
 
+def get_search_query_from_url(url):
+    if not url:
+        return ""
+    # Extraer el slug después de /producto/
+    # E.g. https://www.farmatodo.com.ve/producto/111243559-acetaminofen-650-mg-x-10-tabletas-la-sante
+    path_part = url.split("/producto/")[-1].split("?")[0].split("#")[0]
+    # Eliminar prefijo numérico de ID (e.g. 111243559-)
+    clean_part = re.sub(r'^\d+-', '', path_part)
+    # Reemplazar guiones por espacios
+    query = clean_part.replace("-", " ").strip()
+    return query
+
+
+def search_farmatodo_product_url(page, query_text):
+    if not query_text:
+        return None
+    
+    import urllib.parse
+    encoded_query = urllib.parse.quote(query_text)
+    search_url = f"https://www.farmatodo.com.ve/buscar/{encoded_query}"
+    print(f"      [Buscador] Navegando a la página de búsqueda: {search_url}", flush=True)
+    
+    try:
+        # Cargamos la página
+        page.goto(search_url, wait_until="domcontentloaded", timeout=40000)
+        time.sleep(5.0)  # Esperar para hidratación
+        
+        # Desplazarse un poco para gatillar renderizado/carga de imágenes/tarjetas
+        page.evaluate("window.scrollTo(0, 400)")
+        time.sleep(1.0)
+        page.evaluate("window.scrollTo(0, 0)")
+        time.sleep(1.0)
+        
+        # Encontrar enlaces de productos en los resultados de búsqueda
+        links_data = page.evaluate("""
+            () => {
+                const links = Array.from(document.querySelectorAll('a'));
+                const results = [];
+                for (const link of links) {
+                    const href = link.getAttribute('href') || '';
+                    if (href.includes('/producto/')) {
+                        const text = (link.innerText || link.textContent || '').trim().replace(/\\n/g, ' ');
+                        results.push({ href: href, text: text });
+                    }
+                }
+                return results;
+            }
+        """)
+        
+        if not links_data:
+            print("      [Buscador] No se encontraron enlaces de producto en los resultados.", flush=True)
+            return None
+        
+        # Convertir hrefs relativos a absolutos y de-duplicar
+        seen_hrefs = set()
+        unique_links = []
+        for l in links_data:
+            href = l["href"]
+            if href.startswith("/"):
+                href = "https://www.farmatodo.com.ve" + href
+            if href not in seen_hrefs:
+                seen_hrefs.add(href)
+                unique_links.append({"href": href, "text": l["text"]})
+        
+        # Filtrar las palabras clave para encontrar la mejor coincidencia
+        keywords = [w.lower() for w in query_text.split() if len(w) > 2]
+        
+        best_url = None
+        for link in unique_links[:5]:  # Evaluar los primeros 5 resultados
+            href_lower = link["href"].lower()
+            text_lower = link["text"].lower()
+            
+            # Contar coincidencias
+            matches = sum(1 for kw in keywords if kw in href_lower or kw in text_lower)
+            min_matches = max(1, min(len(keywords) // 2, 2))
+            if matches >= min_matches:
+                best_url = link["href"]
+                print(f"      [Buscador] Encontrado producto que coincide: {best_url} (coincidió {matches} palabras clave)", flush=True)
+                break
+                
+        if not best_url and unique_links:
+            best_url = unique_links[0]["href"]
+            print(f"      [Buscador] Fallback al primer resultado de la lista: {best_url}", flush=True)
+            
+        return best_url
+    except Exception as e:
+        print(f"      [Buscador] Error buscando '{query_text}': {e}", flush=True)
+        return None
+
+
 def main():
     # Primero intentamos Firestore (lo que se ve en el panel),
     # caemos al CSV si falla.
@@ -681,6 +771,148 @@ def main():
                 resultados.extend(res)
             except Exception as e:
                 print(f"Error crítico en hilo de scraping: {e}", flush=True)
+
+    # SEGUNDO PASO: Reintento secuencial inteligente y fallback de búsqueda para los que fallaron
+    failed_results = [r for r in resultados if r.get("error")]
+    if failed_results:
+        print("", flush=True)
+        print("=" * 60, flush=True)
+        print(f"[SEGUNDO PASO] Reintentando {len(failed_results)} productos que fallaron...", flush=True)
+        print("=" * 60, flush=True)
+        print("", flush=True)
+        
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1366, "height": 768},
+                locale="es-VE",
+                extra_http_headers={
+                    "Accept-Language": "es-VE,es;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                }
+            )
+            
+            context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
+            
+            page = context.new_page()
+            
+            def block_unnecessary(route):
+                req = route.request
+                res_type = req.resource_type
+                url_lower = req.url.lower()
+                if res_type in ("image", "media", "font", "websocket"):
+                    route.abort()
+                    return
+                analytics_keywords = (
+                    "google-analytics", "analytics", "google-tag-manager", "googletagmanager", 
+                    "facebook", "connect.facebook.net", "hotjar", "sentry", "datadog", 
+                    "mixpanel", "doubleclick", "adservice", "amplitude"
+                )
+                if any(kw in url_lower for kw in analytics_keywords):
+                    route.abort()
+                    return
+                route.continue_()
+                
+            page.route("**/*", block_unnecessary)
+            
+            print("[Segundo Paso] Calentando sesión y ubicando (Caracas)...", flush=True)
+            try:
+                page.goto("https://www.farmatodo.com.ve", wait_until="domcontentloaded", timeout=35000)
+                time.sleep(4.0)
+                page.evaluate("""
+                    () => {
+                        const elements = Array.from(document.querySelectorAll('button, a, div, span'));
+                        const caracasBtn = elements.find(b => {
+                            const t = (b.textContent || '').trim().toLowerCase();
+                            return t === 'caracas' || t === 'caracas metropolitana';
+                        });
+                        if (caracasBtn) {
+                            caracasBtn.click();
+                            return;
+                        }
+                        const confirmarBtn = elements.find(b => {
+                            const t = (b.textContent || '').trim();
+                            return t.includes('Confirmar') || 
+                                   t.includes('Aceptar') || 
+                                   t.includes('Entendido') || 
+                                   t.includes('Sí, aquí') ||
+                                   t.includes('Usar esta ubicación');
+                        });
+                        if (confirmarBtn) {
+                            confirmarBtn.click();
+                        }
+                    }
+                """)
+                time.sleep(1.5)
+            except Exception as e:
+                print(f"[Segundo Paso] Advertencia calentando sesión: {e}", flush=True)
+                
+            for idx, r_old in enumerate(failed_results, 1):
+                marca = r_old.get("marca") or "?"
+                tipo = r_old.get("tipo") or "?"
+                url_orig = r_old.get("url") or ""
+                id_prod = r_old.get("id_producto_propio") or ""
+                
+                print(f"[Segundo Paso] [{idx}/{len(failed_results)}] Reintentando {marca} ({tipo}) - {id_prod}", flush=True)
+                
+                # Reintento directo con un poco de espera
+                time.sleep(random.uniform(2.0, 4.0))
+                r_new = None
+                if url_orig:
+                    try:
+                        print(f"   [Directo] Probando URL original de nuevo: {url_orig}", flush=True)
+                        r_new = scrape_url(page, url_orig, marca, thread_id="SP")
+                    except Exception as e:
+                        print(f"   [Directo] Error: {e}", flush=True)
+                        
+                # Fallback al buscador si falló directo o si dice "Producto no disponible o enlace roto"
+                if not r_new or r_new.get("error"):
+                    query_text = get_search_query_from_url(url_orig)
+                    if not query_text:
+                        query_text = f"{marca}"
+                        
+                    print(f"   [Buscador] Directo fallido o agotado ({r_new.get('error') if r_new else 'No response'}). Buscando alternativo: '{query_text}'", flush=True)
+                    
+                    search_url_found = search_farmatodo_product_url(page, query_text)
+                    if search_url_found:
+                        print(f"   [Buscador] Enlace alternativo encontrado: {search_url_found}. Raspando...", flush=True)
+                        try:
+                            time.sleep(2.0)
+                            r_new = scrape_url(page, search_url_found, marca, thread_id="SP")
+                            if r_new and not r_new.get("error"):
+                                r_new["url"] = search_url_found  # Guardar la nueva URL para actualizarla en Firestore
+                                print(f"   [Buscador] ¡ÉXITO! Producto resuelto y URL actualizada.", flush=True)
+                        except Exception as e:
+                            print(f"   [Buscador] Error: {e}", flush=True)
+                            
+                # Reemplazar en la lista de resultados original si el reintento tuvo éxito
+                if r_new and not r_new.get("error"):
+                    r_new["id_producto_propio"] = id_prod
+                    r_new["cadena"] = "Farmatodo"
+                    r_new["tipo"] = tipo
+                    r_new["_doc_id"] = r_old.get("_doc_id")
+                    r_new["laboratorio"] = r_old.get("laboratorio")
+                    
+                    for i, temp_r in enumerate(resultados):
+                        if temp_r.get("_doc_id") == r_old.get("_doc_id") or (temp_r.get("id_producto_propio") == id_prod and temp_r.get("marca") == r_old.get("marca") and temp_r.get("tipo") == tipo):
+                            resultados[i] = r_new
+                            print(f"   [Segundo Paso] Resultado de {marca} actualizado con éxito en la lista final.", flush=True)
+                            break
+                else:
+                    print(f"   [Segundo Paso] No se pudo recuperar el producto {marca}.", flush=True)
+                    
+            browser.close()
 
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(resultados, f, ensure_ascii=False, indent=2, default=str)
