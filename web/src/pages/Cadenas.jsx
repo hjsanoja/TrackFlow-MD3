@@ -6,14 +6,14 @@ import ConfirmModal from '../components/ConfirmModal';
 // Scrapers disponibles en el código actual
 const SCRAPERS_DISPONIBLES = [
   { value: 'farmatodo', label: 'Farmatodo' },
-  { value: 'locatel', label: 'Locatel (pendiente)' },
+  { value: 'locatel', label: 'Locatel' },
   { value: 'farmadon', label: 'FarmaDON (pendiente)' },
   { value: 'grupo_san_ignacio', label: 'Grupo San Ignacio (pendiente)' },
   { value: 'xana', label: 'Farmacias Xana (pendiente)' },
   { value: 'farmago', label: 'FarmaGo (pendiente)' },
 ];
 
-const SCRAPERS_IMPLEMENTADOS = new Set(['farmatodo']);
+const SCRAPERS_IMPLEMENTADOS = new Set(['farmatodo', 'locatel']);
 
 export default function Cadenas() {
   const [cadenas, setCadenas] = useState([]);

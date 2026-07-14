@@ -224,7 +224,10 @@ def scrape_url(page, url, marca, thread_id=1):
                                 document.querySelector('[class*="buy-box"]') ||
                                 document.querySelector('[class*="price-container"]') ||
                                 document.querySelector('.product-info') ||
-                                document.querySelector('[class*="product-info"]');
+                                document.querySelector('[class*="product-info"]') ||
+                                document.querySelector('[class*="productDetails"]') ||
+                                document.querySelector('[class*="product-details"]') ||
+                                document.querySelector('[class*="vtex-store-components"]');
                 
                 if (!container && h1El) {
                     let cur = h1El;
@@ -337,7 +340,16 @@ def scrape_url(page, url, marca, thread_id=1):
                     '[class*="price-active"]',
                     '[class*="price-member"]',
                     '[class*="member-price"]',
-                    '[class*="discount"]'
+                    '[class*="discount"]',
+                    '[class*="sellingPriceValue"]',
+                    '[class*="sellingPrice"]',
+                    '[class*="price-selling"]',
+                    '[class*="price_sellingPrice"]',
+                    '[class*="PriceValue"]',
+                    '[class*="priceValue"]',
+                    '[class*="priceFraction"]',
+                    '[class*="vtex-product-price"]',
+                    '[class*="vtex-store-components-3-x-sellingPrice"]'
                 ];
                 
                 const originalSelectors = [
@@ -349,7 +361,11 @@ def scrape_url(page, url, marca, thread_id=1):
                     '[class*="price-original"]',
                     'span.product-purchase__price-original',
                     '[class*="old-price"]',
-                    '[class*="list-price"]'
+                    '[class*="list-price"]',
+                    '[class*="listPriceValue"]',
+                    '[class*="listPrice"]',
+                    '[class*="price-list"]',
+                    '[class*="price_listPrice"]'
                 ];
 
                 let activeEl = null;
@@ -375,11 +391,58 @@ def scrape_url(page, url, marca, thread_id=1):
                 const containerText = container ? (container.innerText || container.textContent || '') : '';
                 const blockPrices = extractPricesFromText(containerText);
 
+                // 7. Encontrar el precio más cercano al H1 (ideal para Locatel y fallback general)
+                let closestPrice = null;
+                if (h1El) {
+                    try {
+                        const priceElements = Array.from(document.querySelectorAll('*')).filter(el => {
+                            if (el.children.length > 0) return false; // solo hojas
+                            const t = (el.innerText || el.textContent || '').trim();
+                            // Debe contener Bs o Bs. y números con decimales
+                            return (t.includes('Bs') || t.includes('Bs.')) && /\d+[,.]\d{2}/.test(t);
+                        });
+                        
+                        if (priceElements.length > 0) {
+                            let minDist = Infinity;
+                            let bestEl = null;
+                            
+                            function getDistance(el1, el2) {
+                                const path1 = [];
+                                let cur = el1;
+                                while (cur) { path1.push(cur); cur = cur.parentElement; }
+                                
+                                cur = el2;
+                                let dist2 = 0;
+                                while (cur) {
+                                    const idx = path1.indexOf(cur);
+                                    if (idx !== -1) return idx + dist2;
+                                    dist2++;
+                                    cur = cur.parentElement;
+                                }
+                                return 999;
+                            }
+                            
+                            priceElements.forEach(el => {
+                                const d = getDistance(h1El, el);
+                                if (d < minDist) {
+                                    minDist = d;
+                                    bestEl = el;
+                                }
+                            });
+                            
+                            if (bestEl) {
+                                closestPrice = (bestEl.innerText || bestEl.textContent || '').trim();
+                            }
+                        }
+                    } catch(e_dist) {}
+                }
+
                 return {
                     active_text: active_text,
                     original_text: original_text,
                     nombre: nombre,
-                    block_prices: blockPrices
+                    block_prices: blockPrices,
+                    closest_price: closestPrice
                 };
             }
         """)
@@ -403,6 +466,7 @@ def scrape_url(page, url, marca, thread_id=1):
         result["nombre"] = data.get("nombre")
         precio_activo = parse_price(data.get("active_text"))
         precio_original = parse_price(data.get("original_text"))
+        precio_closest = parse_price(data.get("closest_price"))
 
         # Si los selectores de clases fallaron, pero pudimos extraer números del bloque de compra:
         block_prices = data.get("block_prices", [])
@@ -414,6 +478,10 @@ def scrape_url(page, url, marca, thread_id=1):
                 # El menor es el activo/oferta, el mayor es el original
                 precio_activo = unique_prices[0]
                 precio_original = unique_prices[-1]
+
+        # Si aún es None, usamos el precio más cercano al H1
+        if precio_activo is None and precio_closest is not None:
+            precio_activo = precio_closest
 
         if precio_original is not None and precio_activo is not None:
             if precio_original > precio_activo:
@@ -440,14 +508,19 @@ def scrape_url(page, url, marca, thread_id=1):
 def get_search_query_from_url(url):
     if not url:
         return ""
-    # Extraer el slug después de /producto/
-    # E.g. https://www.farmatodo.com.ve/producto/111243559-acetaminofen-650-mg-x-10-tabletas-la-sante
-    path_part = url.split("/producto/")[-1].split("?")[0].split("#")[0]
-    # Eliminar prefijo numérico de ID (e.g. 111243559-)
-    clean_part = re.sub(r'^\d+-', '', path_part)
-    # Reemplazar guiones por espacios
-    query = clean_part.replace("-", " ").strip()
-    return query
+    if "/producto/" in url:
+        path_part = url.split("/producto/")[-1].split("?")[0].split("#")[0]
+        clean_part = re.sub(r'^\d+-', '', path_part)
+        query = clean_part.replace("-", " ").strip()
+        return query
+    elif "/p" in url:
+        # Locatel style: https://www.locatel.com.ve/calox_acetaminofen_650mg_x_10_tabletas/p
+        parts = [p for p in url.split("/") if p]
+        if len(parts) >= 2:
+            slug = parts[-2]
+            query = slug.replace("_", " ").replace("-", " ").strip()
+            return query
+    return ""
 
 
 def search_farmatodo_product_url(page, query_text):
@@ -557,7 +630,7 @@ def main():
             filas_inactivas.append(fila)
             continue
 
-        if cadena_norm == "farmatodo":
+        if cadena_norm in ("farmatodo", "locatel"):
             filas_farmatodo.append(fila)
         else:
             filas_otras_cadenas.append(fila)
@@ -570,18 +643,18 @@ def main():
     if only_product_id:
         only_product_id = only_product_id.strip()
         filas_farmatodo = [f for f in filas_farmatodo if f.get("id_producto_propio") == only_product_id]
-        print(f"[FILTRO INDIVIDUAL] Filtrando por ONLY_PRODUCT_ID={only_product_id}. Quedan {len(filas_farmatodo)} filas de Farmatodo para este scraping.", flush=True)
+        print(f"[FILTRO INDIVIDUAL] Filtrando por ONLY_PRODUCT_ID={only_product_id}. Quedan {len(filas_farmatodo)} filas para este scraping.", flush=True)
 
     if only_doc_id:
         only_doc_id = only_doc_id.strip()
         filas_farmatodo = [f for f in filas_farmatodo if f.get("_doc_id") == only_doc_id]
-        print(f"[FILTRO INDIVIDUAL] Filtrando por ONLY_DOC_ID={only_doc_id}. Quedan {len(filas_farmatodo)} filas de Farmatodo para este scraping.", flush=True)
+        print(f"[FILTRO INDIVIDUAL] Filtrando por ONLY_DOC_ID={only_doc_id}. Quedan {len(filas_farmatodo)} filas para este scraping.", flush=True)
 
     print("")
     print("=" * 60)
     print("RESUMEN DE FILAS:")
     print("  Total en fuente:        " + str(len(filas_todas)))
-    print("  De Farmatodo activas:   " + str(len(filas_farmatodo)))
+    print("  Activas (Farmatodo/Locatel): " + str(len(filas_farmatodo)))
     print("  De otras cadenas:       " + str(len(filas_otras_cadenas))
           + " (ignoradas, scraper no implementado)")
     print("  Inactivas:              " + str(len(filas_inactivas)))
@@ -589,7 +662,7 @@ def main():
 
     if filas_otras_cadenas:
         print("")
-        print("Cadenas detectadas que no son Farmatodo:")
+        print("Cadenas detectadas no soportadas:")
         cadenas_unicas = set(str(f.get("cadena", "")) for f in filas_otras_cadenas)
         for c in cadenas_unicas:
             cnt = sum(1 for f in filas_otras_cadenas if str(f.get("cadena", "")) == c)
@@ -597,7 +670,7 @@ def main():
         print("")
 
     if not filas_farmatodo:
-        print("No hay URLs activas de Farmatodo para scrapear.")
+        print("No hay URLs activas de Farmatodo/Locatel para scrapear.")
         sys.exit(0)
 
     # PARALELISMO SEGURO: Dividir el scraping en hilos concurrentes (máximo 4)
@@ -606,7 +679,7 @@ def main():
     chunks = [c for c in chunks if c]  # Filtrar grupos vacíos
 
     print("")
-    print(f"Scrapeando {len(filas_farmatodo)} URLs de Farmatodo usando {len(chunks)} hilos concurrentes...")
+    print(f"Scrapeando {len(filas_farmatodo)} URLs usando {len(chunks)} hilos concurrentes...")
     print("")
     inicio = time.time()
     resultados = []
@@ -759,7 +832,7 @@ def main():
                         }
 
                 r["id_producto_propio"] = id_prod
-                r["cadena"] = "Farmatodo"
+                r["cadena"] = fila.get("cadena", "Farmatodo")
                 r["tipo"] = tipo
                 r["_doc_id"] = fila.get("_doc_id")
                 r["laboratorio"] = fila.get("laboratorio")
@@ -899,7 +972,11 @@ def main():
                         
                     print(f"   [Buscador] Directo fallido o agotado ({r_new.get('error') if r_new else 'No response'}). Buscando alternativo: '{query_text}'", flush=True)
                     
-                    search_url_found = search_farmatodo_product_url(page, query_text)
+                    if "farmatodo" in url_orig.lower():
+                        search_url_found = search_farmatodo_product_url(page, query_text)
+                    else:
+                        search_url_found = None
+                        
                     if search_url_found:
                         print(f"   [Buscador] Enlace alternativo encontrado: {search_url_found}. Raspando...", flush=True)
                         try:
@@ -914,7 +991,7 @@ def main():
                 # Reemplazar en la lista de resultados original si el reintento tuvo éxito
                 if r_new and not r_new.get("error"):
                     r_new["id_producto_propio"] = id_prod
-                    r_new["cadena"] = "Farmatodo"
+                    r_new["cadena"] = r_old.get("cadena", "Farmatodo")
                     r_new["tipo"] = tipo
                     r_new["_doc_id"] = r_old.get("_doc_id")
                     r_new["laboratorio"] = r_old.get("laboratorio")
