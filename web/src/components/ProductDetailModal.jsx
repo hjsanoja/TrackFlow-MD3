@@ -57,7 +57,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
       setHistorico([]);
     } catch (err) {
-      console.error('Error clearing product history:', err);
+      console.error('Error clearing product history:', err?.message || String(err));
     }
     setClearing(false);
     setShowClearConfirm(false);
@@ -78,7 +78,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
         docs.sort((a, b) => (a.scraped_at?.getTime() || 0) - (b.scraped_at?.getTime() || 0));
         setHistorico(docs);
       } catch (err) {
-        console.error('Error cargando histórico:', err.message || err);
+        console.error('Error cargando histórico:', err?.message || String(err));
         setError(err.message);
       }
       setLoading(false);

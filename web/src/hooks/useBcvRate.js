@@ -22,7 +22,7 @@ export function useBcvRate() {
       }
       return null;
     } catch (err) {
-      console.error('[useBcvRate] error leyendo Firestore:', err.message || err);
+      console.error('[useBcvRate] error leyendo Firestore:', err?.message || String(err));
       setError('No se pudo leer la tasa BCV: ' + err.message);
       return null;
     }
@@ -64,11 +64,11 @@ export function useBcvRate() {
           });
           await loadFromFirestore();
         } catch (err) {
-          console.warn('[useBcvRate] no pude guardar tasa auto:', err.message);
+          console.warn('[useBcvRate] no pude guardar tasa auto:', err?.message || String(err));
         }
       }
     } catch (err) {
-      console.error('[useBcvRate] error en refresh:', err.message || err);
+      console.error('[useBcvRate] error en refresh:', err?.message || String(err));
       setError(err.message);
     }
     setLoading(false);
@@ -90,7 +90,7 @@ export function useBcvRate() {
       await loadFromFirestore();
       return true;
     } catch (err) {
-      console.error('[useBcvRate] error guardando manual:', err.message || err);
+      console.error('[useBcvRate] error guardando manual:', err?.message || String(err));
       setError('No se pudo guardar: ' + err.message);
       return false;
     }

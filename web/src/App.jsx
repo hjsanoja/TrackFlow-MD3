@@ -41,7 +41,7 @@ export default function App() {
             alert('Tu usuario no está registrado.');
           }
         } catch (err) {
-          console.error('Error:', err.message || err);
+          console.error('Error:', err?.message || String(err));
           await signOut(auth);
         }
       } else {

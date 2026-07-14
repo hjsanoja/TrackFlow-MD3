@@ -75,7 +75,7 @@ export default function Dashboard({ user, userDoc }) {
       setBcvHistorico(uniqueDaysRates);
 
     } catch (err) {
-      console.error('Error cargando panel:', err.message || err);
+      console.error('Error cargando panel:', err?.message || String(err));
     }
     if (!showSilently) setLoading(false);
   };
@@ -104,7 +104,7 @@ export default function Dashboard({ user, userDoc }) {
         }
       }
     }, (err) => {
-      console.error('Error en onSnapshot de scrape_runs:', err);
+      console.error('Error en onSnapshot de scrape_runs:', err?.message || String(err));
     });
 
     return () => unsubscribe();
@@ -175,7 +175,7 @@ export default function Dashboard({ user, userDoc }) {
       setRefreshMessage({ type: 'success', text: 'Historial de precios y análisis de scraper vaciados con éxito.' });
       await cargarDatos();
     } catch (err) {
-      console.error('Error al borrar historial:', err);
+      console.error('Error al borrar historial:', err?.message || String(err));
       setRefreshMessage({ type: 'error', text: 'Error al borrar historial: ' + err.message });
     }
     setClearingHistory(false);
