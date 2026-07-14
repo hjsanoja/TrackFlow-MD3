@@ -464,7 +464,8 @@ def scrape_url(page, url, marca, thread_id=1):
                         const priceElements = Array.from(document.querySelectorAll('*')).filter(el => {
                             if (el.children.length > 0) return false; // solo hojas
                             const t = (el.innerText || el.textContent || '').trim();
-                            const hasBs = t.includes('Bs') || t.includes('Bs.') || t.toLowerCase().includes('bolivar') || t.toLowerCase().includes('ves');
+                            const t_lower = t.toLowerCase();
+                            const hasBs = t_lower.includes('bs') || t_lower.includes('bolivar') || t_lower.includes('ves');
                             return hasBs && /\d+/.test(t);
                         });
                         
