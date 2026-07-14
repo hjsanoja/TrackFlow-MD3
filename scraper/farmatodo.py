@@ -62,6 +62,58 @@ def parse_price(text):
         return None
 
 
+_LATEST_BCV_RATE = None
+
+def get_latest_bcv_rate():
+    global _LATEST_BCV_RATE
+    if _LATEST_BCV_RATE is not None:
+        return _LATEST_BCV_RATE
+    try:
+        from firebase_client import get_db
+        db = get_db()
+        docs = list(db.collection("bcv_rates").order_by("updated_at", direction="DESCENDING").limit(1).stream())
+        if docs:
+            _LATEST_BCV_RATE = float(docs[0].to_dict().get("value"))
+            print(f"[BCV] Tasa cargada desde Firestore: Bs {_LATEST_BCV_RATE:,.2f}", flush=True)
+            return _LATEST_BCV_RATE
+    except Exception as e:
+        print(f"[BCV] Error cargando tasa desde Firestore: {e}", flush=True)
+    
+    # Fallback directly fetching it using urllib
+    try:
+        import urllib.request
+        import json
+        url = "https://ve.dolarapi.com/v1/dolares/oficial"
+        req = urllib.request.Request(url, headers={"User-Agent": "TrackFlow/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            rate = data.get("promedio") or data.get("price")
+            if rate:
+                _LATEST_BCV_RATE = float(rate)
+                print(f"[BCV] Tasa obtenida de backup (dolarapi): Bs {_LATEST_BCV_RATE:,.2f}", flush=True)
+                return _LATEST_BCV_RATE
+    except Exception as e:
+        print(f"[BCV] Error cargando backup: {e}", flush=True)
+
+    _LATEST_BCV_RATE = 44.5  # safe hardcoded fallback
+    return _LATEST_BCV_RATE
+
+
+def parse_price_usd(text):
+    if not text:
+        return None
+    cleaned = text.replace("Ref.", "").replace("Ref", "").replace("$", "").replace("USD", "").replace(":", "").strip()
+    cleaned = re.sub(r"[^\d.,]", "", cleaned)
+    if not cleaned:
+        return None
+    if "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def cargar_filas_de_firestore():
     """Lee productos_competencia desde Firestore (fuente de verdad)."""
     try:
@@ -391,9 +443,26 @@ def scrape_url(page, url, marca, thread_id=1):
                 const containerText = container ? (container.innerText || container.textContent || '') : '';
                 const blockPrices = extractPricesFromText(containerText);
 
-                // 7. Encontrar el precio más cercano al H1 (ideal para Locatel y fallback general)
+                // 7. Encontrar el precio más cercano al H1 (ideal para Locatel, SAAS y fallback general)
                 let closestPrice = null;
+                let closestRefPrice = null;
                 if (h1El) {
+                    function getDistance(el1, el2) {
+                        const path1 = [];
+                        let cur = el1;
+                        while (cur) { path1.push(cur); cur = cur.parentElement; }
+                        
+                        cur = el2;
+                        let dist2 = 0;
+                        while (cur) {
+                            const idx = path1.indexOf(cur);
+                            if (idx !== -1) return idx + dist2;
+                            dist2++;
+                            cur = cur.parentElement;
+                        }
+                        return 999;
+                    }
+
                     try {
                         const priceElements = Array.from(document.querySelectorAll('*')).filter(el => {
                             if (el.children.length > 0) return false; // solo hojas
@@ -405,23 +474,6 @@ def scrape_url(page, url, marca, thread_id=1):
                         if (priceElements.length > 0) {
                             let minDist = Infinity;
                             let bestEl = null;
-                            
-                            function getDistance(el1, el2) {
-                                const path1 = [];
-                                let cur = el1;
-                                while (cur) { path1.push(cur); cur = cur.parentElement; }
-                                
-                                cur = el2;
-                                let dist2 = 0;
-                                while (cur) {
-                                    const idx = path1.indexOf(cur);
-                                    if (idx !== -1) return idx + dist2;
-                                    dist2++;
-                                    cur = cur.parentElement;
-                                }
-                                return 999;
-                            }
-                            
                             priceElements.forEach(el => {
                                 const d = getDistance(h1El, el);
                                 if (d < minDist) {
@@ -429,12 +481,33 @@ def scrape_url(page, url, marca, thread_id=1):
                                     bestEl = el;
                                 }
                             });
-                            
                             if (bestEl) {
                                 closestPrice = (bestEl.innerText || bestEl.textContent || '').trim();
                             }
                         }
                     } catch(e_dist) {}
+
+                    try {
+                        const refElements = Array.from(document.querySelectorAll('*')).filter(el => {
+                            if (el.children.length > 0) return false;
+                            const t = (el.innerText || el.textContent || '').trim();
+                            return (t.includes('Ref') || t.includes('$') || t.includes('USD')) && /\d+[,.]\d{2}/.test(t);
+                        });
+                        if (refElements.length > 0) {
+                            let minDist = Infinity;
+                            let bestEl = null;
+                            refElements.forEach(el => {
+                                const d = getDistance(h1El, el);
+                                if (d < minDist) {
+                                    minDist = d;
+                                    bestEl = el;
+                                }
+                            });
+                            if (bestEl) {
+                                closestRefPrice = (bestEl.innerText || bestEl.textContent || '').trim();
+                            }
+                        }
+                    } catch(e_ref) {}
                 }
 
                 return {
@@ -442,7 +515,8 @@ def scrape_url(page, url, marca, thread_id=1):
                     original_text: original_text,
                     nombre: nombre,
                     block_prices: blockPrices,
-                    closest_price: closestPrice
+                    closest_price: closestPrice,
+                    closest_ref_price: closestRefPrice
                 };
             }
         """)
@@ -467,6 +541,7 @@ def scrape_url(page, url, marca, thread_id=1):
         precio_activo = parse_price(data.get("active_text"))
         precio_original = parse_price(data.get("original_text"))
         precio_closest = parse_price(data.get("closest_price"))
+        precio_closest_ref = parse_price_usd(data.get("closest_ref_price"))
 
         # Si los selectores de clases fallaron, pero pudimos extraer números del bloque de compra:
         block_prices = data.get("block_prices", [])
@@ -482,6 +557,12 @@ def scrape_url(page, url, marca, thread_id=1):
         # Si aún es None, usamos el precio más cercano al H1
         if precio_activo is None and precio_closest is not None:
             precio_activo = precio_closest
+
+        # Si aún es None, probamos a convertir el precio de referencia USD a Bolívares!
+        if precio_activo is None and precio_closest_ref is not None:
+            rate = get_latest_bcv_rate()
+            precio_activo = round(precio_closest_ref * rate, 2)
+            print(f"      [Conversor] Convertido precio USD {precio_closest_ref} a Bs. {precio_activo} usando tasa {rate:,.2f}", flush=True)
 
         if precio_original is not None and precio_activo is not None:
             if precio_original > precio_activo:
@@ -515,10 +596,12 @@ def get_search_query_from_url(url):
         return query
     elif "/p" in url:
         # Locatel style: https://www.locatel.com.ve/calox_acetaminofen_650mg_x_10_tabletas/p
+        # SAAS style: https://www.farmaciasaas.com/11497-cetirizina-comp-10mg-x10-leti/p
         parts = [p for p in url.split("/") if p]
         if len(parts) >= 2:
             slug = parts[-2]
-            query = slug.replace("_", " ").replace("-", " ").strip()
+            clean_part = re.sub(r'^\d+-', '', slug)
+            query = clean_part.replace("_", " ").replace("-", " ").strip()
             return query
     return ""
 
@@ -630,7 +713,7 @@ def main():
             filas_inactivas.append(fila)
             continue
 
-        if cadena_norm in ("farmatodo", "locatel"):
+        if cadena_norm in ("farmatodo", "locatel", "farmaciasaas", "saas", "farmacias saas", "farmacia saas"):
             filas_farmatodo.append(fila)
         else:
             filas_otras_cadenas.append(fila)
@@ -654,7 +737,7 @@ def main():
     print("=" * 60)
     print("RESUMEN DE FILAS:")
     print("  Total en fuente:        " + str(len(filas_todas)))
-    print("  Activas (Farmatodo/Locatel): " + str(len(filas_farmatodo)))
+    print("  Activas (Farmatodo/Locatel/SAAS): " + str(len(filas_farmatodo)))
     print("  De otras cadenas:       " + str(len(filas_otras_cadenas))
           + " (ignoradas, scraper no implementado)")
     print("  Inactivas:              " + str(len(filas_inactivas)))
@@ -670,7 +753,7 @@ def main():
         print("")
 
     if not filas_farmatodo:
-        print("No hay URLs activas de Farmatodo/Locatel para scrapear.")
+        print("No hay URLs activas de Farmatodo/Locatel/SAAS para scrapear.")
         sys.exit(0)
 
     # PARALELISMO SEGURO: Dividir el scraping en hilos concurrentes (máximo 4)
