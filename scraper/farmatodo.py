@@ -209,7 +209,7 @@ def scrape_url(page, url, marca, thread_id=1):
         try:
             # Esperar a que el h1, la clase de precio o el texto "Bs" se carguen (lo que ocurra primero)
             # Esto evita esperas secuenciales lentas y optimiza el tiempo de respuesta.
-            page.wait_for_selector("h1, .product-purchase__price, [class*='price'], text=/Bs/i", timeout=4000)
+            page.wait_for_selector("h1, .product-purchase__price, [class*='price']", timeout=4000)
         except PlaywrightTimeout:
             pass
 
