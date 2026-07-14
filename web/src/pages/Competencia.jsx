@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, writeBatch } from 'firebase/firestore';
+import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, writeBatch, onSnapshot } from 'firebase/firestore';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
@@ -23,6 +23,8 @@ export default function Competencia() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [scrapingItems, setScrapingItems] = useState({});
+  const [manualPriceItem, setManualPriceItem] = useState(null);
 
   const fileInputRef = useRef(null);
 
@@ -150,6 +152,144 @@ export default function Competencia() {
       setMessage({ type: 'error', text: err.message });
     }
   };
+
+  const handleScrapeIndividual = async (item) => {
+    setScrapingItems(prev => ({ ...prev, [item.id]: 'disparando' }));
+    try {
+      const secretSnap = await getDoc(doc(db, 'secrets', 'github_dispatch'));
+      if (!secretSnap.exists()) {
+        throw new Error('Falta configurar las credenciales de GitHub en Firestore (secrets/github_dispatch).');
+      }
+      const { token, repo_owner, repo_name, workflow_event_type } = secretSnap.data();
+      const res = await fetch(
+        `https://api.github.com/repos/${repo_owner}/${repo_name}/dispatches`,
+        {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Authorization': `Bearer ${token}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          body: JSON.stringify({
+            event_type: workflow_event_type || 'run-scraper',
+            client_payload: {
+              product_id: item.id_producto_propio,
+              doc_id: item.id
+            }
+          }),
+        }
+      );
+      if (res.status === 204) {
+        setScrapingItems(prev => ({ ...prev, [item.id]: 'esperando' }));
+        setMessage({
+          type: 'success',
+          text: `El robot se ha lanzado para extraer "${item.marca}" de forma individual en tiempo real. La tabla se actualizará automáticamente en unos instantes.`
+        });
+
+        // Suscribirse en tiempo real al documento para detectar cuando cambie
+        const unsubscribe = onSnapshot(doc(db, 'productos_competencia', item.id), (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            // Si tiene fecha de scrape nueva o el estado ya no es "esperando", refrescamos
+            setScrapingItems(prev => {
+              if (prev[item.id] === 'esperando') {
+                const copy = { ...prev };
+                delete copy[item.id];
+                // Recargar de nuevo los items
+                cargar();
+                return copy;
+              }
+              return prev;
+            });
+            unsubscribe();
+          }
+        });
+
+        // Timeout de seguridad de 3 minutos
+        setTimeout(() => {
+          setScrapingItems(prev => {
+            const copy = { ...prev };
+            delete copy[item.id];
+            return copy;
+          });
+        }, 180000);
+
+      } else {
+        const txt = await res.text();
+        throw new Error(`GitHub respondió ${res.status}: ${txt}`);
+      }
+    } catch (err) {
+      setScrapingItems(prev => {
+        const copy = { ...prev };
+        delete copy[item.id];
+        return copy;
+      });
+      setMessage({ type: 'error', text: 'Error al lanzar robot: ' + err.message });
+    }
+  };
+
+  // Cálculos para KPIs de Competencia
+  const kpis = useMemo(() => {
+    const activos = items.filter(it => it.activo);
+    const exitosos = activos.filter(it => it.estado === 'ok');
+    const conError = activos.filter(it => it.estado === 'error');
+    
+    // 1. Tasa de Salud Técnica
+    const tasaSalud = activos.length > 0 ? Math.round((exitosos.length / activos.length) * 100) : 100;
+    
+    // 2. Enlaces Desactualizados (> 24 horas)
+    const desactualizados = activos.filter(it => {
+      if (!it.ultimo_scrape) return true;
+      const scrapeTime = it.ultimo_scrape.toDate?.()?.getTime() || new Date(it.ultimo_scrape).getTime();
+      const diffHrs = (Date.now() - scrapeTime) / (1000 * 60 * 60);
+      return diffHrs > 24;
+    }).length;
+
+    // 3. Comparativa de precios vs competencia
+    const prodGrupos = {};
+    activos.forEach(it => {
+      const pId = it.id_producto_propio;
+      if (!prodGrupos[pId]) prodGrupos[pId] = [];
+      prodGrupos[pId].push(it);
+    });
+
+    let propiosMasBaratos = 0;
+    let totalComparables = 0;
+
+    Object.keys(prodGrupos).forEach(pId => {
+      const g = prodGrupos[pId];
+      const propio = g.find(it => it.tipo === 'propio');
+      const alternativas = g.filter(it => it.tipo === 'alternativa');
+      
+      if (propio && alternativas.length > 0) {
+        const precioPropio = propio.ultimo_precio_desc_bs || propio.ultimo_precio_full_bs;
+        if (precioPropio) {
+          totalComparables++;
+          const preciosAlt = alternativas
+            .map(a => a.ultimo_precio_desc_bs || a.ultimo_precio_full_bs)
+            .filter(Boolean);
+          
+          if (preciosAlt.length > 0) {
+            const minAlt = Math.min(...preciosAlt);
+            if (precioPropio < minAlt) {
+              propiosMasBaratos++;
+            }
+          }
+        }
+      }
+    });
+
+    return {
+      totalEnlaces: items.length,
+      activosCount: activos.length,
+      exitososCount: exitosos.length,
+      erroresCount: conError.length,
+      tasaSalud,
+      desactualizados,
+      propiosMasBaratos,
+      totalComparables
+    };
+  }, [items]);
 
   const limpiarFiltros = () => {
     setSearch('');
@@ -346,6 +486,64 @@ export default function Competencia() {
         </div>
       )}
 
+      {/* KPIs de Competencia Bento Section */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {/* KPI 1: Tasa de Salud Técnica */}
+        <div className="bg-white rounded-3xl border border-outline-variant p-5 flex items-center justify-between shadow-sm relative overflow-hidden">
+          <div className="space-y-1.5">
+            <span className="text-[11px] font-mono font-bold text-on-surface-variant uppercase tracking-wider">Salud del Catálogo</span>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-3xl font-display font-extrabold text-primary">{kpis.tasaSalud}%</span>
+              <span className="text-xs font-semibold text-on-surface-variant">Enlaces OK</span>
+            </div>
+            <p className="text-xs text-on-surface-variant/80 font-sans">
+              {kpis.exitososCount} de {kpis.activosCount} activos sin fallos de lectura.
+            </p>
+          </div>
+          <div className={`p-4 rounded-2xl flex items-center justify-center ${kpis.tasaSalud > 90 ? 'bg-[#f0f9eb] text-[#2e7d32]' : 'bg-error-container text-error'}`}>
+            <span className="material-symbols-outlined text-2xl">{kpis.tasaSalud > 90 ? 'health_and_safety' : 'sync_problem'}</span>
+          </div>
+        </div>
+
+        {/* KPI 2: Frescura de Datos */}
+        <div className="bg-white rounded-3xl border border-outline-variant p-5 flex items-center justify-between shadow-sm relative overflow-hidden">
+          <div className="space-y-1.5">
+            <span className="text-[11px] font-mono font-bold text-on-surface-variant uppercase tracking-wider">Frescura de Precios</span>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-3xl font-display font-extrabold text-primary">
+                {kpis.desactualizados}
+              </span>
+              <span className="text-xs font-semibold text-on-surface-variant">Vencidos</span>
+            </div>
+            <p className="text-xs text-on-surface-variant/80 font-sans">
+              Enlaces que requieren actualización de precios (&gt; 24h).
+            </p>
+          </div>
+          <div className={`p-4 rounded-2xl flex items-center justify-center ${kpis.desactualizados === 0 ? 'bg-[#f0f9eb] text-[#2e7d32]' : 'bg-amber-50 text-amber-600 border border-amber-200/40'}`}>
+            <span className="material-symbols-outlined text-2xl">{kpis.desactualizados === 0 ? 'schedule' : 'history_toggle_off'}</span>
+          </div>
+        </div>
+
+        {/* KPI 3: Liderazgo de Mercado */}
+        <div className="bg-white rounded-3xl border border-outline-variant p-5 flex items-center justify-between shadow-sm relative overflow-hidden">
+          <div className="space-y-1.5">
+            <span className="text-[11px] font-mono font-bold text-on-surface-variant uppercase tracking-wider">Liderazgo en Precios</span>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-3xl font-display font-extrabold text-primary">
+                {kpis.totalComparables > 0 ? `${Math.round((kpis.propiosMasBaratos / kpis.totalComparables) * 100)}%` : '—'}
+              </span>
+              <span className="text-xs font-semibold text-on-surface-variant">Líder</span>
+            </div>
+            <p className="text-xs text-on-surface-variant/80 font-sans">
+              {kpis.propiosMasBaratos} de {kpis.totalComparables} comparables son los más baratos.
+            </p>
+          </div>
+          <div className="p-4 rounded-2xl bg-secondary/10 text-secondary flex items-center justify-center">
+            <span className="material-symbols-outlined text-2xl">leaderboard</span>
+          </div>
+        </div>
+      </div>
+
       {/* Filter and Query Section */}
       <div className="bg-white rounded-3xl border border-outline-variant p-5 flex flex-wrap items-center gap-3 shadow-sm">
         <div className="flex-1 min-w-[280px] relative">
@@ -447,31 +645,50 @@ export default function Competencia() {
                     <td className="px-6 py-4 text-right font-mono font-bold text-primary">
                       {it.ultimo_precio_desc_bs ? (
                         <div>
-                          <div className="text-on-surface font-extrabold">{formatPrice(it.ultimo_precio_desc_bs)}</div>
+                          <div className="text-on-surface font-extrabold flex items-center justify-end gap-1">
+                            {it.actualizado_manualmente && (
+                              <span className="material-symbols-outlined text-xs text-amber-500 font-sans" title="Precio actualizado manualmente por el usuario">edit_note</span>
+                            )}
+                            {formatPrice(it.ultimo_precio_desc_bs)}
+                          </div>
                           {it.ultimo_precio_full_bs && it.ultimo_precio_full_bs !== it.ultimo_precio_desc_bs && (
                             <div className="text-[10px] text-on-surface-variant line-through font-normal">{formatPrice(it.ultimo_precio_full_bs)}</div>
                           )}
                         </div>
                       ) : it.ultimo_precio_full_bs ? (
-                        <span className="font-extrabold">{formatPrice(it.ultimo_precio_full_bs)}</span>
+                        <div className="flex items-center justify-end gap-1">
+                          {it.actualizado_manualmente && (
+                            <span className="material-symbols-outlined text-xs text-amber-500 font-sans" title="Precio actualizado manualmente por el usuario">edit_note</span>
+                          )}
+                          <span className="font-extrabold">{formatPrice(it.ultimo_precio_full_bs)}</span>
+                        </div>
                       ) : (
                         <span className="text-gray-300 font-mono select-none">—</span>
                       )}
                     </td>
                     <td className="px-6 py-4 text-center">
-                      {it.estado === 'ok' && (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold font-mono px-2.5 py-1 rounded-full bg-[#f0f9eb] text-[#214f00] border border-secondary/30">
-                          <span className="material-symbols-outlined text-[10px] leading-none">check_circle</span>
-                          OK
+                      {scrapingItems[it.id] ? (
+                        <span className="inline-flex items-center gap-1 text-[10px] font-bold font-mono px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 animate-pulse">
+                          <span className="material-symbols-outlined animate-spin text-[11px] leading-none">autorenew</span>
+                          {scrapingItems[it.id] === 'disparando' ? 'Gatillando...' : 'En cola...'}
                         </span>
+                      ) : (
+                        <>
+                          {it.estado === 'ok' && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] font-bold font-mono px-2.5 py-1 rounded-full bg-[#f0f9eb] text-[#214f00] border border-secondary/30">
+                              <span className="material-symbols-outlined text-[10px] leading-none">check_circle</span>
+                              OK
+                            </span>
+                          )}
+                          {it.estado === 'error' && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] font-bold font-mono px-2.5 py-1 rounded-full bg-error-container text-error border border-error/20" title={it.ultimo_error}>
+                              <span className="material-symbols-outlined text-[10px] leading-none">error</span>
+                              Error
+                            </span>
+                          )}
+                          {!it.estado && <span className="text-[10px] font-bold font-mono px-2.5 py-1 bg-surface-low text-on-surface-variant border border-outline-variant rounded-full">Sin Datos</span>}
+                        </>
                       )}
-                      {it.estado === 'error' && (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold font-mono px-2.5 py-1 rounded-full bg-error-container text-error border border-error/20" title={it.ultimo_error}>
-                          <span className="material-symbols-outlined text-[10px] leading-none">error</span>
-                          Error
-                        </span>
-                      )}
-                      {!it.estado && <span className="text-[10px] font-bold font-mono px-2.5 py-1 bg-surface-low text-on-surface-variant border border-outline-variant rounded-full">Sin Datos</span>}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <button onClick={() => handleToggleActivo(it)}
@@ -481,15 +698,30 @@ export default function Competencia() {
                         {it.activo ? 'Monitorear' : 'Pausado'}
                       </button>
                     </td>
-                    <td className="px-6 py-4 text-right whitespace-nowrap">
+                    <td className="px-6 py-4 text-right whitespace-nowrap space-x-2.5">
+                      <button onClick={() => handleScrapeIndividual(it)}
+                        disabled={!!scrapingItems[it.id] || !it.activo}
+                        className={`text-xs font-bold inline-flex items-center gap-0.5 ${
+                          scrapingItems[it.id] || !it.activo ? 'text-gray-300 cursor-not-allowed' : 'text-secondary hover:text-secondary/80'
+                        }`}
+                        title={!it.activo ? "Activa la monitorización para poder usar el robot" : "Lanzar robot extractor para esta variante en tiempo real"}>
+                        <span className="material-symbols-outlined text-xs">bolt</span>
+                        Robot
+                      </button>
+                      <button onClick={() => setManualPriceItem(it)}
+                        className="text-xs text-amber-600 hover:text-amber-700 font-bold inline-flex items-center gap-0.5"
+                        title="Corregir precio manualmente si el robot falló">
+                        <span className="material-symbols-outlined text-xs">edit_note</span>
+                        Precio
+                      </button>
                       <button onClick={() => setEditing(it.id)}
-                        className="text-xs text-primary hover:text-primary/80 font-bold mr-4 inline-flex items-center gap-1">
-                        <span className="material-symbols-outlined text-sm">edit</span>
+                        className="text-xs text-primary hover:text-primary/80 font-bold inline-flex items-center gap-0.5">
+                        <span className="material-symbols-outlined text-xs">edit</span>
                         Editar
                       </button>
                       <button onClick={() => handleDelete(it)}
-                        className="text-xs text-error hover:text-error/80 font-bold inline-flex items-center gap-1">
-                        <span className="material-symbols-outlined text-sm">delete</span>
+                        className="text-xs text-error hover:text-error/80 font-bold inline-flex items-center gap-0.5">
+                        <span className="material-symbols-outlined text-xs">delete</span>
                         Eliminar
                       </button>
                     </td>
@@ -582,6 +814,91 @@ export default function Competencia() {
               <button onClick={() => setShowCsvModal(false)}
                 className="px-5 py-2 border border-outline rounded-full text-xs font-bold hover:bg-surface-low text-on-surface-variant">
                 Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manual Price Override Dialog */}
+      {manualPriceItem && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 animate-fade-in" onClick={() => setManualPriceItem(null)}>
+          <div className="bg-white rounded-3xl shadow-xl max-w-md w-full p-6 space-y-4 border border-outline-variant" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b pb-3 border-outline-variant">
+              <h2 className="text-xl font-display font-extrabold text-primary">Ingresar Precio Manual</h2>
+              <button onClick={() => setManualPriceItem(null)} className="text-on-surface-variant hover:text-on-surface text-2xl leading-none">×</button>
+            </div>
+            <div className="space-y-4 text-sm text-on-background">
+              <p>
+                Anula los errores del scraper automático para <strong>{manualPriceItem.marca}</strong> de <strong>{manualPriceItem.cadena}</strong>.
+              </p>
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-on-surface-variant font-mono">Precio en Bolívares (Bs. *):</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  placeholder="Ej: 450.50"
+                  id="manualPriceInput"
+                  defaultValue={manualPriceItem.ultimo_precio_desc_bs || manualPriceItem.ultimo_precio_full_bs || ''}
+                  className="w-full px-4 py-2.5 border border-outline rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary font-sans bg-white text-on-surface"
+                />
+              </div>
+              <p className="text-[11px] text-on-surface-variant italic">
+                * Esto establecerá el estado de la URL como "OK" y registrará el precio ingresado en el historial de precios y en el panel.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2 border-t pt-3 border-outline-variant">
+              <button onClick={() => setManualPriceItem(null)} className="px-4 py-2 text-xs font-bold text-on-surface-variant hover:bg-surface-low rounded-full">
+                Cancelar
+              </button>
+              <button
+                onClick={async () => {
+                  const inputVal = document.getElementById('manualPriceInput').value;
+                  const price = parseFloat(inputVal);
+                  if (isNaN(price) || price <= 0) {
+                    alert('Por favor ingresa un precio válido mayor a 0');
+                    return;
+                  }
+                  try {
+                    const docId = manualPriceItem.id;
+                    const ahora = new Date();
+                    
+                    // 1. Guardar precio en el documento de competencia
+                    await setDoc(doc(db, 'productos_competencia', docId), {
+                      ultimo_precio_full_bs: price,
+                      ultimo_precio_desc_bs: price,
+                      ultimo_scrape: ahora,
+                      estado: 'ok',
+                      actualizado_manualmente: true,
+                      ultimo_error: null,
+                    }, { merge: true });
+
+                    // 2. Insertar en historico_precios
+                    const runId = 'MANUAL_' + ahora.toISOString().slice(0, 10).replace(/-/g, '') + '_' + ahora.toTimeString().slice(0, 8).replace(/:/g, '');
+                    await setDoc(doc(collection(db, 'historico_precios')), {
+                      prod_comp_id: docId,
+                      id_producto_propio: manualPriceItem.id_producto_propio,
+                      cadena: manualPriceItem.cadena,
+                      marca: manualPriceItem.marca,
+                      tipo: manualPriceItem.tipo,
+                      nombre: manualPriceItem.marca + ' (Manual)',
+                      precio_full_bs: price,
+                      precio_desc_bs: price,
+                      tiene_descuento: false,
+                      scraped_at: ahora,
+                      run_id: runId,
+                    });
+
+                    setMessage({ type: 'success', text: `Precio de ${manualPriceItem.marca} actualizado manualmente a Bs ${price.toFixed(2)}.` });
+                    setManualPriceItem(null);
+                    await cargar();
+                  } catch (err) {
+                    alert('Error: ' + err.message);
+                  }
+                }}
+                className="px-5 py-2 text-xs font-bold bg-primary hover:bg-primary/90 text-white rounded-full shadow-sm"
+              >
+                Guardar Precio
               </button>
             </div>
           </div>

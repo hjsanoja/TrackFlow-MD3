@@ -43,6 +43,8 @@ jobs:
       - name: Run Farmatodo scraper
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          ONLY_PRODUCT_ID: ${{ github.event.client_payload.product_id }}
+          ONLY_DOC_ID: ${{ github.event.client_payload.doc_id }}
         run: python scraper/farmatodo.py
 
       - name: Push results to Firestore

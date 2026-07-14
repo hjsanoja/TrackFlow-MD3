@@ -562,6 +562,21 @@ def main():
         else:
             filas_otras_cadenas.append(fila)
 
+    # FILTRADO ADICIONAL POR VARIABLE DE ENTORNO (SCRAPING INDIVIDUAL)
+    import os
+    only_product_id = os.environ.get("ONLY_PRODUCT_ID")
+    only_doc_id = os.environ.get("ONLY_DOC_ID")
+
+    if only_product_id:
+        only_product_id = only_product_id.strip()
+        filas_farmatodo = [f for f in filas_farmatodo if f.get("id_producto_propio") == only_product_id]
+        print(f"[FILTRO INDIVIDUAL] Filtrando por ONLY_PRODUCT_ID={only_product_id}. Quedan {len(filas_farmatodo)} filas de Farmatodo para este scraping.", flush=True)
+
+    if only_doc_id:
+        only_doc_id = only_doc_id.strip()
+        filas_farmatodo = [f for f in filas_farmatodo if f.get("_doc_id") == only_doc_id]
+        print(f"[FILTRO INDIVIDUAL] Filtrando por ONLY_DOC_ID={only_doc_id}. Quedan {len(filas_farmatodo)} filas de Farmatodo para este scraping.", flush=True)
+
     print("")
     print("=" * 60)
     print("RESUMEN DE FILAS:")
