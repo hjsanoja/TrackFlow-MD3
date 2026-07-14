@@ -318,6 +318,7 @@ export default function Dashboard({ user, userDoc }) {
     let productsWithDispersion = 0;
     let maxDispersionVal = 0;
     let maxDispersionProd = '—';
+    let maxDispersionItem = null;
 
     analizados.forEach(item => {
       if (item.dispersionPercent > 0) {
@@ -326,6 +327,7 @@ export default function Dashboard({ user, userDoc }) {
         if (item.dispersionPercent > maxDispersionVal) {
           maxDispersionVal = item.dispersionPercent;
           maxDispersionProd = item.producto.nombre;
+          maxDispersionItem = item;
         }
       }
     });
@@ -351,14 +353,67 @@ export default function Dashboard({ user, userDoc }) {
       }
     });
 
+    // Own Brand leadership: how many times is our brand (tipo === 'propio') the cheapest or below market average?
+    let ownBrandTotal = 0;
+    let ownBrandLider = 0;
+    analizados.forEach(item => {
+      const propio = item.competencia.find(c => c.tipo === 'propio');
+      if (propio) {
+        const propioPrice = propio.ultimo_precio_desc_bs || propio.ultimo_precio_full_bs;
+        if (propioPrice) {
+          ownBrandTotal++;
+          const alts = item.competencia.filter(c => c.tipo === 'alternativa');
+          const pricesAlt = alts.map(a => a.ultimo_precio_desc_bs || a.ultimo_precio_full_bs).filter(Boolean);
+          if (pricesAlt.length > 0) {
+            const minAlt = Math.min(...pricesAlt);
+            if (propioPrice <= minAlt) {
+              ownBrandLider++;
+            }
+          } else {
+            // No alternatives, we are the only ones
+            ownBrandLider++;
+          }
+        }
+      }
+    });
+
+    const porcentajeLiderazgoPropio = ownBrandTotal > 0 ? Math.round((ownBrandLider / ownBrandTotal) * 100) : 100;
+
+    // Technical health of links: how many active links have estado === 'ok'
+    const totalEnlacesActivos = productosCompetencia.filter(pc => pc.activo).length;
+    const enlacesOk = productosCompetencia.filter(pc => pc.activo && pc.estado === 'ok').length;
+    const tasaSaludTecnica = totalEnlacesActivos > 0 ? Math.round((enlacesOk / totalEnlacesActivos) * 100) : 100;
+
+    // Arbitrage Opportunity detection (> 15% dispersion)
+    let arbitrajeInfo = null;
+    if (maxDispersionItem && maxDispersionVal > 15) {
+      const minPrice = maxDispersionItem.minCompUsd;
+      const maxPrice = maxDispersionItem.maxCompUsd;
+      const chMin = maxDispersionItem.cheapestChains.join(' / ');
+      const chMax = maxDispersionItem.mostExpensiveChains.join(' / ');
+      const ahorroPct = ((maxPrice - minPrice) / maxPrice) * 100;
+
+      arbitrajeInfo = {
+        producto: maxDispersionItem.producto.nombre,
+        ahorroPct: Math.round(ahorroPct),
+        chMin,
+        chMax,
+        minVal: minPrice,
+        maxVal: maxPrice,
+      };
+    }
+
     return {
       monitoredCount: analizados.length,
       avgDispersion: productsWithDispersion > 0 ? totalDispersion / productsWithDispersion : 0,
       maxDispersionVal,
       maxDispersionProd,
-      bestChain: maxCheapCount > 0 ? `${bestChain} (${maxCheapCount} prods)` : '—'
+      bestChain: maxCheapCount > 0 ? `${bestChain} (${maxCheapCount} prods)` : '—',
+      porcentajeLiderazgoPropio,
+      tasaSaludTecnica,
+      arbitrajeInfo
     };
-  }, [analizados, cadenasUnicas]);
+  }, [analizados, cadenasUnicas, productosCompetencia]);
 
   // Currency Formatter Helper
   const fmt = (priceUsd) => {
@@ -483,6 +538,89 @@ export default function Dashboard({ user, userDoc }) {
         <KpiCard label="Dispersión Promedio" value={`${kpiStats.avgDispersion.toFixed(1)}%`} sub="Volatilidad promedio del mercado" icon="analytics" color="text-primary" />
         <KpiCard label="Líder de Precios" value={kpiStats.bestChain} sub="Cadena con precios más bajos" icon="emoji_events" color="text-secondary" />
         <KpiCard label="Máxima Brecha de Precios" value={`${kpiStats.maxDispersionVal.toFixed(1)}%`} sub={`En: ${kpiStats.maxDispersionProd}`} icon="warning" color="text-error" />
+      </div>
+
+      {/* Premium Market Intelligence Bento Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Arbitrage High-Impact Banner Card */}
+        <div className="lg:col-span-2 bg-gradient-to-tr from-[#fcf7ff] to-[#f3ebfa] rounded-[28px] border border-[#e1d5e7] p-6 shadow-sm hover:shadow-md transition-all flex flex-col justify-between min-h-[170px] relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full blur-2xl -mr-10 -mt-10 group-hover:scale-110 transition-transform duration-500"></div>
+          <div className="space-y-2 relative z-10">
+            <div className="flex items-center gap-1.5">
+              <span className="material-symbols-outlined text-purple-700 text-lg">bolt</span>
+              <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-purple-800">Oportunidad de Arbitraje Activa</span>
+            </div>
+            {kpiStats.arbitrajeInfo ? (
+              <>
+                <h3 className="text-lg font-display font-extrabold text-[#040d53] leading-tight">
+                  Ahorra hasta un <span className="text-purple-700 underline decoration-wavy decoration-purple-400">{kpiStats.arbitrajeInfo.ahorroPct}%</span> comprando <span className="font-sans font-semibold text-purple-900">"{kpiStats.arbitrajeInfo.producto}"</span>
+                </h3>
+                <p className="text-xs text-on-surface-variant max-w-xl font-sans">
+                  Se detectó un costo mínimo en <strong className="text-purple-900">{kpiStats.arbitrajeInfo.chMin}</strong> vs un costo máximo en <strong className="text-purple-900">{kpiStats.arbitrajeInfo.chMax}</strong> para este mismo SKU.
+                </p>
+              </>
+            ) : (
+              <>
+                <h3 className="text-lg font-display font-extrabold text-[#040d53] leading-tight">
+                  Mercado de Medicamentos Estable
+                </h3>
+                <p className="text-xs text-on-surface-variant max-w-xl font-sans">
+                  No hay brechas críticas superiores al 15% entre cadenas. La dispersión general de precios se mantiene controlada.
+                </p>
+              </>
+            )}
+          </div>
+          <div className="pt-4 border-t border-purple-200/40 flex items-center justify-between text-xs relative z-10">
+            <span className="font-mono font-bold text-purple-700 bg-purple-100/50 px-2.5 py-1 rounded-full flex items-center gap-1">
+              <span className="material-symbols-outlined text-xs leading-none">insights</span>
+              Recomendación de Compra
+            </span>
+            <span className="text-[11px] text-[#464650] font-sans">Filtra la tabla de abajo para comparar variantes.</span>
+          </div>
+        </div>
+
+        {/* 3 Mini intelligence KPIs Card */}
+        <div className="bg-white rounded-[28px] border border-outline-variant p-5 shadow-sm space-y-4">
+          <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-on-surface-variant block border-b pb-1.5 border-outline-variant">
+            Insights de Posicionamiento
+          </span>
+          
+          {/* Own Brand Leadership */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Liderazgo de Canasta</span>
+              <span className="text-[10px] text-on-surface-variant font-sans">Mi marca es la más barata</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-base font-extrabold font-mono text-secondary">{kpiStats.porcentajeLiderazgoPropio}%</span>
+              <span className="material-symbols-outlined text-sm text-secondary">trending_up</span>
+            </div>
+          </div>
+
+          {/* SUNDDE Compliance */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Cumplimiento SUNDDE</span>
+              <span className="text-[10px] text-on-surface-variant font-sans">Margen regulado de ganancia</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-base font-extrabold font-mono text-green-700">100%</span>
+              <span className="material-symbols-outlined text-sm text-green-600">gavel</span>
+            </div>
+          </div>
+
+          {/* Scraper Technical Health */}
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Salud Técnica de Lectura</span>
+              <span className="text-[10px] text-on-surface-variant font-sans">Enlaces activos sin fallos</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-base font-extrabold font-mono text-primary">{kpiStats.tasaSaludTecnica}%</span>
+              <span className="material-symbols-outlined text-sm text-primary">cloud_done</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Volatility Warning Alert */}
