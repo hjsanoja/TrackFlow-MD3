@@ -114,6 +114,13 @@ def parse_price_usd(text):
         return None
 
 
+def is_usd_text(text):
+    if not text:
+        return False
+    t = text.lower()
+    return "ref" in t or "$" in t or "usd" in t or "divisa" in t
+
+
 def cargar_filas_de_firestore():
     """Lee productos_competencia desde Firestore (fuente de verdad)."""
     try:
@@ -467,8 +474,8 @@ def scrape_url(page, url, marca, thread_id=1):
                         const priceElements = Array.from(document.querySelectorAll('*')).filter(el => {
                             if (el.children.length > 0) return false; // solo hojas
                             const t = (el.innerText || el.textContent || '').trim();
-                            // Debe contener Bs o Bs. y números con decimales
-                            return (t.includes('Bs') || t.includes('Bs.')) && /\d+[,.]\d{2}/.test(t);
+                            const hasBs = t.includes('Bs') || t.includes('Bs.') || t.toLowerCase().includes('bolivar') || t.toLowerCase().includes('ves');
+                            return hasBs && /\d+/.test(t);
                         });
                         
                         if (priceElements.length > 0) {
@@ -491,7 +498,7 @@ def scrape_url(page, url, marca, thread_id=1):
                         const refElements = Array.from(document.querySelectorAll('*')).filter(el => {
                             if (el.children.length > 0) return false;
                             const t = (el.innerText || el.textContent || '').trim();
-                            return (t.includes('Ref') || t.includes('$') || t.includes('USD')) && /\d+[,.]\d{2}/.test(t);
+                            return (t.includes('Ref') || t.includes('$') || t.includes('USD')) && /\d+/.test(t);
                         });
                         if (refElements.length > 0) {
                             let minDist = Infinity;
@@ -538,10 +545,34 @@ def scrape_url(page, url, marca, thread_id=1):
             continue
 
         result["nombre"] = data.get("nombre")
-        precio_activo = parse_price(data.get("active_text"))
-        precio_original = parse_price(data.get("original_text"))
+        active_text_raw = data.get("active_text") or ""
+        original_text_raw = data.get("original_text") or ""
+
+        precio_activo = parse_price(active_text_raw)
+        precio_original = parse_price(original_text_raw)
         precio_closest = parse_price(data.get("closest_price"))
         precio_closest_ref = parse_price_usd(data.get("closest_ref_price"))
+
+        # Determinar si el precio activo o original están en USD
+        is_active_usd = is_usd_text(active_text_raw) or (precio_activo is not None and "farmaciasaas" in url_orig.lower() and precio_activo < 20.0)
+        is_original_usd = is_usd_text(original_text_raw) or (precio_original is not None and "farmaciasaas" in url_orig.lower() and precio_original < 20.0)
+
+        if is_active_usd:
+            # Si el precio activo está en USD, preferimos usar el precio en Bolívares que encontramos en la página.
+            if precio_closest is not None:
+                print(f"   [Detector Moneda] Se detectó precio activo en USD ({precio_activo}), reemplazando por precio real en Bs. ({precio_closest} Bs.)", flush=True)
+                precio_activo = precio_closest
+            else:
+                # Si no hay precio en Bs, convertimos usando la tasa BCV
+                rate = get_latest_bcv_rate()
+                precio_activo_bs = round(precio_activo * rate, 2) if precio_activo is not None else None
+                print(f"   [Detector Moneda] Se detectó precio activo en USD ({precio_activo}), convirtiendo a Bs usando tasa {rate:,.2f} -> {precio_activo_bs} Bs.", flush=True)
+                precio_activo = precio_activo_bs
+
+        if is_original_usd and precio_original is not None:
+            # Si el precio original está en USD, lo convertimos a Bolívares usando la tasa BCV
+            rate = get_latest_bcv_rate()
+            precio_original = round(precio_original * rate, 2)
 
         # Si los selectores de clases fallaron, pero pudimos extraer números del bloque de compra:
         block_prices = data.get("block_prices", [])
