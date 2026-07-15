@@ -18,6 +18,7 @@ export default function Dashboard({ user, userDoc }) {
   const [search, setSearch] = useState('');
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('Todas');
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [dashboardPriceMode, setDashboardPriceMode] = useState('descuento');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState(null);
@@ -197,7 +198,9 @@ export default function Dashboard({ user, userDoc }) {
         
         // Find competitor prices (converted to USD using current rate for standard comparison)
         const chainPrices = compItems.map(c => {
-          const priceBs = c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs;
+          const priceBs = dashboardPriceMode === 'descuento'
+            ? (c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs)
+            : c.ultimo_precio_full_bs;
           if (!priceBs || !bcv.rate) return null;
           return {
             cadena: c.cadena,
@@ -234,7 +237,11 @@ export default function Dashboard({ user, userDoc }) {
 
         // Find own price
         const propioItem = compItems.find(c => c.tipo === 'propio');
-        const propioPriceBs = propioItem ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs) : null;
+        const propioPriceBs = propioItem ? (
+          dashboardPriceMode === 'descuento'
+            ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs)
+            : propioItem.ultimo_precio_full_bs
+        ) : null;
         const propioPriceUsd = (propioPriceBs && bcv.rate) ? (propioPriceBs / bcv.rate) : null;
 
         // Difference vs cheapest (minCompUsd)
@@ -262,7 +269,7 @@ export default function Dashboard({ user, userDoc }) {
           diffAvgPercent,
         };
       });
-  }, [productos, productosCompetencia, bcv.rate]);
+  }, [productos, productosCompetencia, bcv.rate, dashboardPriceMode]);
 
   // Filtered rows
   const filas = useMemo(() => {
@@ -433,20 +440,100 @@ export default function Dashboard({ user, userDoc }) {
 
   // CSV intelligence report generation
   const downloadReport = () => {
-    let csv = 'ID Interno,Producto,Laboratorio,Categoria,Precio Minimo (USD),Precio Maximo (USD),Precio Promedio (USD),Dispersion %,Cadenas Lideres\n';
+    // Add BOM for Excel UTF-8 compatibility
+    let csv = '\ufeff';
+    csv += 'ID Interno,Producto Propio,Categoría,Laboratorio Propio,Mi Precio Lista (Bs),Mi Precio Descuento (Bs),Mi Precio Lista (USD),Mi Precio Descuento (USD),Cadena Enlace,Tipo Enlace,Nombre Enlace,Laboratorio Enlace,Precio Lista Enlace (Bs),Precio Lista Enlace (USD),Precio Descuento Enlace (Bs),Precio Descuento Enlace (USD),Diferencia vs Mi Precio (%),URL Enlace\n';
+    
     analizados.forEach(item => {
       const p = item.producto;
-      const dev = item.dispersionPercent ? `${item.dispersionPercent.toFixed(1)}%` : '0%';
-      const leaders = item.cheapestChains.join(' / ') || '—';
-      const row = `"${p.id_interno}","${p.nombre}","${p.laboratorio || '—'}","${p.categoria}","${item.minCompUsd ? item.minCompUsd.toFixed(2) : '—'}","${item.maxCompUsd ? item.maxCompUsd.toFixed(2) : '—'}","${item.avgCompUsd ? item.avgCompUsd.toFixed(2) : '—'}","${dev}","${leaders}"\n`;
-      csv += row;
+      const comp = item.competencia || [];
+      
+      // Get own product details
+      const propioItem = comp.find(c => c.tipo === 'propio');
+      const miPrecioListaBs = propioItem ? (propioItem.ultimo_precio_full_bs || null) : null;
+      const miPrecioDescBs = propioItem ? (propioItem.ultimo_precio_desc_bs || null) : null;
+      
+      const rate = bcv.rate || 1;
+      const miPrecioListaUsd = miPrecioListaBs ? miPrecioListaBs / rate : null;
+      const miPrecioDescUsd = miPrecioDescBs ? miPrecioDescBs / rate : null;
+
+      if (comp.length === 0) {
+        // If there are no competitors or links at all
+        const row = [
+          p.id_interno,
+          p.nombre,
+          p.categoria,
+          p.laboratorio || '—',
+          miPrecioListaBs !== null ? miPrecioListaBs.toFixed(2) : '—',
+          miPrecioDescBs !== null ? miPrecioDescBs.toFixed(2) : '—',
+          miPrecioListaUsd !== null ? miPrecioListaUsd.toFixed(2) : '—',
+          miPrecioDescUsd !== null ? miPrecioDescUsd.toFixed(2) : '—',
+          '—', // Cadena
+          '—', // Tipo
+          '—', // Nombre Enlace
+          '—', // Lab Enlace
+          '—', // Precio Lista Enlace Bs
+          '—', // Precio Lista Enlace USD
+          '—', // Precio Descuento Enlace Bs
+          '—', // Precio Descuento Enlace USD
+          '—', // Diferencia %
+          '—'  // URL Enlace
+        ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',') + '\n';
+        csv += row;
+      } else {
+        comp.forEach(pc => {
+          const pcPrecioListaBs = pc.ultimo_precio_full_bs || null;
+          const pcPrecioDescBs = pc.ultimo_precio_desc_bs || null;
+          const pcPrecioListaUsd = pcPrecioListaBs && bcv.rate ? pcPrecioListaBs / bcv.rate : null;
+          const pcPrecioDescUsd = pcPrecioDescBs && bcv.rate ? pcPrecioDescBs / bcv.rate : null;
+
+          // Compare competitor price against own price
+          const miCompPrecioBs = dashboardPriceMode === 'descuento' 
+            ? (miPrecioDescBs || miPrecioListaBs) 
+            : miPrecioListaBs;
+            
+          const pcCompPrecioBs = dashboardPriceMode === 'descuento'
+            ? (pcPrecioDescBs || pcPrecioListaBs)
+            : pcPrecioListaBs;
+
+          let diffPercentStr = '—';
+          if (miCompPrecioBs && pcCompPrecioBs && miCompPrecioBs > 0 && pc.tipo !== 'propio') {
+            const diffPct = ((miCompPrecioBs - pcCompPrecioBs) / pcCompPrecioBs) * 100;
+            diffPercentStr = `${diffPct > 0 ? '+' : ''}${diffPct.toFixed(1)}%`;
+          } else if (pc.tipo === 'propio') {
+            diffPercentStr = 'Base (Propio)';
+          }
+
+          const row = [
+            p.id_interno,
+            p.nombre,
+            p.categoria,
+            p.laboratorio || '—',
+            miPrecioListaBs !== null ? miPrecioListaBs.toFixed(2) : '—',
+            miPrecioDescBs !== null ? miPrecioDescBs.toFixed(2) : '—',
+            miPrecioListaUsd !== null ? miPrecioListaUsd.toFixed(2) : '—',
+            miPrecioDescUsd !== null ? miPrecioDescUsd.toFixed(2) : '—',
+            pc.cadena,
+            pc.tipo === 'propio' ? 'Mi Marca' : 'Competidor',
+            pc.marca,
+            pc.laboratorio || '—',
+            pcPrecioListaBs !== null ? pcPrecioListaBs.toFixed(2) : '—',
+            pcPrecioListaUsd !== null ? pcPrecioListaUsd.toFixed(2) : '—',
+            pcPrecioDescBs !== null ? pcPrecioDescBs.toFixed(2) : '—',
+            pcPrecioDescUsd !== null ? pcPrecioDescUsd.toFixed(2) : '—',
+            diffPercentStr,
+            pc.url || '—'
+          ].map(val => `"${String(val).replace(/"/g, '""')}"`).join(',') + '\n';
+          csv += row;
+        });
+      }
     });
 
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `Reporte_Dispersión_Precios_${new Date().toISOString().slice(0, 10)}.csv`);
+    link.setAttribute('download', `Reporte_Detallado_Precios_${new Date().toISOString().slice(0, 10)}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -713,17 +800,46 @@ export default function Dashboard({ user, userDoc }) {
             <h2 className="font-display font-extrabold text-lg text-primary">Matriz Comparativa & Heatmap de Precios</h2>
             <p className="text-xs text-on-surface-variant font-sans">Identifica el precio de menor costo resaltado en color verde.</p>
           </div>
-          <div className="flex gap-1.5 flex-wrap">
-            {categorias.map(cat => (
-              <button key={cat} onClick={() => setCategoriaSeleccionada(cat)}
-                className={`px-4 py-1 text-xs rounded-full border transition-all ${
-                  categoriaSeleccionada === cat 
-                    ? 'bg-primary border-primary text-on-primary font-bold shadow-sm' 
-                    : 'bg-white border-outline-variant text-on-background hover:bg-surface-low'
-                }`}>
-                {cat}
+          <div className="flex items-center gap-4 flex-wrap">
+            {/* Price Mode Toggle */}
+            <div className="bg-surface-low p-1 rounded-xl flex gap-1 border border-outline-variant">
+              <button
+                onClick={() => setDashboardPriceMode('descuento')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  dashboardPriceMode === 'descuento' 
+                    ? 'bg-primary text-on-primary shadow-sm' 
+                    : 'text-on-surface-variant hover:bg-surface/50'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[14px]">sell</span>
+                Con Descuento
               </button>
-            ))}
+              <button
+                onClick={() => setDashboardPriceMode('lista')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  dashboardPriceMode === 'lista' 
+                    ? 'bg-primary text-on-primary shadow-sm' 
+                    : 'text-on-surface-variant hover:bg-surface/50'
+                }`}
+              >
+                <span className="material-symbols-outlined text-[14px]">receipt_long</span>
+                Precio Lista (Full)
+              </button>
+            </div>
+
+            {/* Categorías */}
+            <div className="flex gap-1.5 flex-wrap">
+              {categorias.map(cat => (
+                <button key={cat} onClick={() => setCategoriaSeleccionada(cat)}
+                  className={`px-4 py-1 text-xs rounded-full border transition-all ${
+                    categoriaSeleccionada === cat 
+                      ? 'bg-primary border-primary text-on-primary font-bold shadow-sm' 
+                      : 'bg-white border-outline-variant text-on-background hover:bg-surface-low'
+                  }`}>
+                  {cat}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -840,6 +956,7 @@ export default function Dashboard({ user, userDoc }) {
           competencia={selectedProduct.competencia}
           currency={currency}
           bcvRate={bcv.rate}
+          initialPriceMode={dashboardPriceMode}
           onClose={() => setSelectedProduct(null)}
         />
       )}

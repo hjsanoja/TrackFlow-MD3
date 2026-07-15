@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { collection, query, where, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from './ConfirmModal';
@@ -30,13 +30,56 @@ function InfoTooltip({ text, align = 'center' }) {
   );
 }
 
-export default function ProductDetailModal({ producto, competencia, currency, bcvRate, onClose }) {
+function CustomTooltip({ active, payload, label, propios, labMap, currency }) {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-white border border-[#e1e2ec] p-3 rounded-2xl shadow-xl space-y-2 max-w-sm text-xs font-sans">
+        <p className="font-bold text-[#040d53] font-mono border-b border-[#e1e2ec] pb-1">
+          Fecha: {label ? label.split('-').reverse().join('/') : ''}
+        </p>
+        <div className="space-y-1.5 max-h-48 overflow-y-auto">
+          {payload.map((pld) => {
+            const isPropio = propios && propios.includes(pld.name);
+            const isPromedio = pld.name === 'Promedio' || pld.name === 'Promedio Mercado';
+            const lab = labMap && labMap[pld.name];
+            
+            return (
+              <div key={pld.name} className="flex justify-between gap-4 items-center">
+                <div className="flex flex-col">
+                  <span className={`font-semibold ${isPropio ? 'text-[#2e7d32]' : isPromedio ? 'text-[#ea580c]' : 'text-[#1c1b1f]'}`}>
+                    {pld.name}
+                    {isPropio && ' (Mi Marca)'}
+                  </span>
+                  {lab && (
+                    <span className="text-[10px] text-[#464650]/80 font-sans leading-none mt-0.5">
+                      Lab: {lab}
+                    </span>
+                  )}
+                </div>
+                <span className={`font-mono font-bold ${isPropio ? 'text-[#2e7d32]' : isPromedio ? 'text-[#ea580c]' : 'text-[#040d53]'}`}>
+                  {currency === 'usd' ? '$' : 'Bs '}{pld.value?.toFixed(2)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
+
+export default function ProductDetailModal({ producto, competencia, currency, bcvRate, onClose, initialPriceMode = 'descuento' }) {
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [priceMode, setPriceMode] = useState('descuento');
+  const [priceMode, setPriceMode] = useState(initialPriceMode);
+
+  // Filters inside modal
+  const [filterRelacion, setFilterRelacion] = useState('todos'); // 'todos', 'propio', 'competencia'
+  const [filterCadena, setFilterCadena] = useState('todas'); // 'todas', or specific chain name
 
   const handleClearHistory = async () => {
     setClearing(true);
@@ -89,12 +132,17 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   const chartData = (() => {
     const byDate = new Map();
     const marcasVistas = new Set();
+    const propios = new Set();
 
     for (const h of historico) {
       if (!h.scraped_at) continue;
       const dateKey = h.scraped_at.toISOString().slice(0, 10);
       const marca = `${h.marca} (${h.cadena})`;
       marcasVistas.add(marca);
+
+      if (h.tipo === 'propio') {
+        propios.add(marca);
+      }
 
       const precioBs = priceMode === 'descuento'
         ? (h.precio_desc_bs || h.precio_full_bs)
@@ -120,10 +168,47 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
     return {
       data,
       marcas: Array.from(marcasVistas),
+      propios,
     };
   })();
 
-  // Calculations for smart indicators
+  // Map each competitor/product key to its laboratory
+  const labMap = useMemo(() => {
+    const map = new Map();
+    for (const c of competencia) {
+      const key = `${c.marca} (${c.cadena})`;
+      map.set(key, c.laboratorio || '');
+    }
+    return map;
+  }, [competencia]);
+
+  // Available chains for dropdown filter
+  const cadenasDisponibles = useMemo(() => {
+    const set = new Set(competencia.map(c => c.cadena));
+    return Array.from(set).sort();
+  }, [competencia]);
+
+  // Filtered competition list for table
+  const competenciaFiltrada = useMemo(() => {
+    return competencia.filter(pc => {
+      const matchRelacion = filterRelacion === 'todos' || pc.tipo === filterRelacion;
+      const matchCadena = filterCadena === 'todas' || pc.cadena === filterCadena;
+      return matchRelacion && matchCadena;
+    });
+  }, [competencia, filterRelacion, filterCadena]);
+
+  // Minimum full price and minimum discount price for highlights in table
+  const validFullPrices = competencia
+    .map(c => c.ultimo_precio_full_bs)
+    .filter(p => p && p > 0);
+  const minFullPriceBs = validFullPrices.length > 0 ? Math.min(...validFullPrices) : null;
+
+  const validDescPrices = competencia
+    .map(c => c.ultimo_precio_desc_bs)
+    .filter(p => p && p > 0);
+  const minDescPriceBs = validDescPrices.length > 0 ? Math.min(...validDescPrices) : null;
+
+  // Calculations for smart indicators (always calculated on full active set for robust comparisons)
   const validPrices = competencia
     .map(c => {
       const pBs = priceMode === 'descuento'
@@ -153,6 +238,14 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
   const diffAvgBs = (propioPriceBs !== null && avgPriceBs !== null) ? propioPriceBs - avgPriceBs : null;
   const pctAvg = (diffAvgBs !== null && avgPriceBs > 0) ? (diffAvgBs / avgPriceBs) * 100 : null;
+
+  const getLineColor = (marcaName, index) => {
+    if (chartData.propios.has(marcaName)) {
+      return '#2e7d32'; // Green for Propio
+    }
+    const competitorColors = ['#040d53', '#ba1a1a', '#004ecb', '#0891b2', '#db2777', '#8b5cf6', '#ea580c', '#3b82f6'];
+    return competitorColors[index % competitorColors.length];
+  };
 
   const formatHeaderPrice = (priceBs) => {
     if (priceBs == null) return '—';
@@ -265,34 +358,66 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                 )}
               </div>
 
-              {/* vs Promedio Card */}
+              {/* Precio Promedio Card */}
               <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1 relative">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Diferencia vs Promedio</span>
-                  <InfoTooltip text="Calculado como: ((Mi Precio - Promedio) / Promedio) * 100. Compara tu precio con el promedio aritmético de la competencia para ver si estás posicionado por encima o por debajo de la media general." align="right" />
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Precio Promedio (Mercado)</span>
+                  <InfoTooltip text="El precio promedio aritmético calculado entre todos los competidores vigentes en el mercado." align="right" />
+                </div>
+                <div className="text-lg font-display font-extrabold text-[#040d53]">
+                  {avgPriceBs ? formatHeaderPrice(avgPriceBs) : '—'}
                 </div>
                 {propioPriceBs && avgPriceBs ? (
-                  <>
-                    <div className={`text-lg font-display font-extrabold ${pctAvg && pctAvg > 0 ? 'text-[#ba1a1a]' : 'text-[#70C145]'}`}>
-                      {pctAvg && pctAvg > 0 ? `+${pctAvg.toFixed(1)}%` : `${pctAvg?.toFixed(1)}%`}
-                    </div>
-                    <p className="text-[10px] text-[#464650] font-semibold font-mono leading-none">
-                      {pctAvg && pctAvg > 0 ? `+${formatHeaderPrice(diffAvgBs)} vs promedio` : `${formatHeaderPrice(diffAvgBs)} vs promedio`}
-                    </p>
-                  </>
+                  <p className="text-[10.5px] leading-tight font-sans font-semibold">
+                    Mi precio:{' '}
+                    <span className={pctAvg && pctAvg > 0 ? 'text-[#ba1a1a]' : 'text-[#2e7d32]'}>
+                      {pctAvg && pctAvg > 0 ? `+${pctAvg.toFixed(1)}%` : `${pctAvg?.toFixed(1)}%`} ({pctAvg && pctAvg > 0 ? '+' : ''}{formatHeaderPrice(diffAvgBs)})
+                    </span>
+                  </p>
                 ) : (
-                  <div className="text-lg font-display font-bold text-gray-300">—</div>
+                  <p className="text-[10px] text-[#464650] font-semibold">
+                    Referencia del mercado
+                  </p>
                 )}
               </div>
             </div>
           )}
 
           {/* Current Competitor Prices Table */}
-          <div className="space-y-2">
-            <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-sm">payments</span>
-              Precios Actuales por Cadena Farmacéutica
-            </h3>
+          <div className="space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
+                <span className="material-symbols-outlined text-sm">payments</span>
+                Precios Actuales por Cadena Farmacéutica
+              </h3>
+
+              {/* Table Filters */}
+              <div className="flex gap-2 flex-wrap">
+                {/* Relación Filter */}
+                <select
+                  value={filterRelacion}
+                  onChange={(e) => setFilterRelacion(e.target.value)}
+                  className="bg-white border border-[#e1e2ec] rounded-xl px-2.5 py-1 text-xs font-bold focus:outline-none focus:border-[#040d53] text-[#464650]"
+                >
+                  <option value="todos">Todos los productos</option>
+                  <option value="propio">Mi Marca (Propio)</option>
+                  <option value="competencia">Competidores</option>
+                </select>
+
+                {/* Cadena Filter */}
+                <select
+                  value={filterCadena}
+                  onChange={(e) => setFilterCadena(e.target.value)}
+                  className="bg-white border border-[#e1e2ec] rounded-xl px-2.5 py-1 text-xs font-bold focus:outline-none focus:border-[#040d53] text-[#464650]"
+                >
+                  <option value="todas">Todas las cadenas</option>
+                  {cadenasDisponibles.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
             <div className="border border-[#e1e2ec] rounded-2xl overflow-hidden bg-white shadow-sm">
               <table className="w-full text-xs border-collapse">
                 <thead className="bg-[#f8f9fa] text-[#040d53] uppercase font-mono tracking-wider font-bold border-b border-[#e1e2ec]">
@@ -305,37 +430,60 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#e1e2ec]">
-                  {competencia.length === 0 ? (
+                  {competenciaFiltrada.length === 0 ? (
                     <tr>
                       <td colSpan="5" className="px-5 py-6 text-center text-[#464650] italic bg-white">
-                        Sin enlaces de competencia vinculados para este producto.
+                        Sin productos que coincidan con los filtros seleccionados.
                       </td>
                     </tr>
                   ) : (
-                    competencia.map(pc => (
-                      <tr key={pc.id} className="hover:bg-[#f8f9fa] transition-colors">
-                        <td className="px-5 py-3 font-bold text-[#040d53]">{pc.cadena}</td>
-                        <td className="px-5 py-3 font-semibold text-[#1c1b1f]">
-                          <div>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</div>
-                          {pc.laboratorio && (
-                            <div className="text-[10px] text-[#464650] font-normal mt-0.5">Lab: {pc.laboratorio}</div>
-                          )}
-                        </td>
-                        <td className="px-5 py-3">
-                          <span className={`text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded-full ${
-                            pc.tipo === 'propio' ? 'bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7]' : 'bg-[#f3f4f9] text-[#464650] border border-[#e1e2ec]'
-                          }`}>
-                            {pc.tipo === 'propio' ? 'Mi Marca' : 'Competencia'}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3 text-right font-mono font-bold text-[#464650]">
-                          {formatHeaderPrice(pc.ultimo_precio_full_bs)}
-                        </td>
-                        <td className="px-5 py-3 text-right font-mono font-extrabold text-[#040d53]">
-                          {formatHeaderPrice(pc.ultimo_precio_desc_bs)}
-                        </td>
-                      </tr>
-                    ))
+                    competenciaFiltrada.map(pc => {
+                      const isCheapestFull = pc.ultimo_precio_full_bs && pc.ultimo_precio_full_bs === minFullPriceBs;
+                      const isCheapestDesc = pc.ultimo_precio_desc_bs && pc.ultimo_precio_desc_bs === minDescPriceBs;
+                      
+                      return (
+                        <tr key={pc.id} className="hover:bg-[#f8f9fa] transition-colors">
+                          <td className="px-5 py-3 font-bold text-[#040d53]">{pc.cadena}</td>
+                          <td className="px-5 py-3 font-semibold text-[#1c1b1f]">
+                            <div>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</div>
+                            {pc.laboratorio && (
+                              <div className="text-[10px] text-[#464650] font-normal mt-0.5">Lab: {pc.laboratorio}</div>
+                            )}
+                          </td>
+                          <td className="px-5 py-3">
+                            <span className={`text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded-full ${
+                              pc.tipo === 'propio' ? 'bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7]' : 'bg-[#f3f4f9] text-[#464650] border border-[#e1e2ec]'
+                            }`}>
+                              {pc.tipo === 'propio' ? 'Mi Marca' : 'Competencia'}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 text-right font-mono font-bold text-[#464650]">
+                            <div className="flex flex-col items-end justify-center">
+                              <span className={isCheapestFull ? 'text-[#2e7d32] font-extrabold' : ''}>
+                                {formatHeaderPrice(pc.ultimo_precio_full_bs)}
+                              </span>
+                              {isCheapestFull && (
+                                <span className="text-[9px] bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7] font-bold px-1.5 py-0.5 rounded mt-0.5 uppercase tracking-wide">
+                                  Más bajo
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3 text-right font-mono font-extrabold text-[#040d53]">
+                            <div className="flex flex-col items-end justify-center">
+                              <span className={isCheapestDesc ? 'text-[#2e7d32] font-extrabold' : ''}>
+                                {formatHeaderPrice(pc.ultimo_precio_desc_bs)}
+                              </span>
+                              {isCheapestDesc && (
+                                <span className="text-[9px] bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7] font-bold px-1.5 py-0.5 rounded mt-0.5 uppercase tracking-wide">
+                                  Más bajo
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -390,19 +538,23 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                         tick={{ fontSize: 11, fill: '#464650' }} 
                       />
                       <YAxis tick={{ fontSize: 11, fill: '#464650' }} />
-                      <Tooltip />
+                      <Tooltip content={<CustomTooltip propios={Array.from(chartData.propios)} labMap={Object.fromEntries(labMap)} currency={currency} />} />
                       <Legend wrapperStyle={{ fontSize: 11, marginTop: 10 }} />
-                      {chartData.marcas.map((m, i) => (
-                        <Line
-                          key={m}
-                          type="monotone"
-                          dataKey={m}
-                          stroke={COLORS[i % COLORS.length]}
-                          strokeWidth={2}
-                          dot={{ r: 3 }}
-                          connectNulls
-                        />
-                      ))}
+                      {chartData.marcas.map((m, i) => {
+                        const isPropio = chartData.propios.has(m);
+                        return (
+                          <Line
+                            key={m}
+                            type="monotone"
+                            dataKey={m}
+                            name={isPropio ? `${m} ⭐ (Mi Marca)` : m}
+                            stroke={getLineColor(m, i)}
+                            strokeWidth={isPropio ? 4.5 : 2}
+                            dot={{ r: isPropio ? 5 : 3 }}
+                            connectNulls
+                          />
+                        );
+                      })}
                       {/* Línea especial para el Promedio del mercado */}
                       {chartData.data.length > 0 && (
                         <Line
