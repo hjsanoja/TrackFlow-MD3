@@ -544,6 +544,18 @@ def scrape_url(page, url, marca, thread_id=1):
         precio_closest = parse_price(data.get("closest_price"))
         precio_closest_ref = parse_price_usd(data.get("closest_ref_price"))
 
+        # Validar rangos lógicos para evitar parseos erróneos (como teléfonos, RIFs o ceros)
+        if precio_activo is not None and (precio_activo <= 0.1 or precio_activo > 50000.0):
+            print(f"   [Filtro Rango] precio_activo inválido ({precio_activo}), descartado.", flush=True)
+            precio_activo = None
+        if precio_original is not None and (precio_original <= 0.1 or precio_original > 50000.0):
+            print(f"   [Filtro Rango] precio_original inválido ({precio_original}), descartado.", flush=True)
+            precio_original = None
+        if precio_closest is not None and (precio_closest <= 0.1 or precio_closest > 50000.0):
+            precio_closest = None
+        if precio_closest_ref is not None and (precio_closest_ref <= 0.01 or precio_closest_ref > 1000.0):
+            precio_closest_ref = None
+
         # Determinar si el precio activo o original están en USD
         is_active_usd = is_usd_text(active_text_raw) or (precio_activo is not None and "farmaciasaas" in url.lower() and precio_activo < 20.0)
         is_original_usd = is_usd_text(original_text_raw) or (precio_original is not None and "farmaciasaas" in url.lower() and precio_original < 20.0)
@@ -585,6 +597,13 @@ def scrape_url(page, url, marca, thread_id=1):
             rate = get_latest_bcv_rate()
             precio_activo = round(precio_closest_ref * rate, 2)
             print(f"      [Conversor] Convertido precio USD {precio_closest_ref} a Bs. {precio_activo} usando tasa {rate:,.2f}", flush=True)
+
+        # Re-validar precio activo tras las conversiones y herencias
+        if precio_activo is not None and (precio_activo <= 0.1 or precio_activo > 50000.0):
+            print(f"   [Filtro Rango Final] precio_activo resultante inválido ({precio_activo}), descartado.", flush=True)
+            precio_activo = None
+        if precio_original is not None and (precio_original <= 0.1 or precio_original > 50000.0):
+            precio_original = None
 
         if precio_original is not None and precio_activo is not None:
             if precio_original > precio_activo:

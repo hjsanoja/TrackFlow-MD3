@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from firebase_client import get_db
+from firebase_admin import firestore
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -55,8 +56,18 @@ def main():
                 parts.append(laboratorio)
             prod_comp_id = "_".join(parts).replace(" ", "_")
 
+        # Considerar error si viene campo 'error' explícito o si no tiene precio válido (es None o <= 0.1)
+        es_error = False
+        error_msg = ""
         if r.get("error"):
-            print("  Skip " + r["marca"] + ": " + r["error"])
+            es_error = True
+            error_msg = r["error"]
+        elif r.get("precio_full_bs") is None or r.get("precio_full_bs") <= 0.1:
+            es_error = True
+            error_msg = "Precio no encontrado en la página (agotado o sin precio visible)."
+
+        if es_error:
+            print("  Skip " + r["marca"] + ": " + error_msg)
             errores += 1
             db.collection("productos_competencia").document(prod_comp_id).set({
                 "id_producto_propio": r["id_producto_propio"],
@@ -66,7 +77,7 @@ def main():
                 "url": r["url"],
                 "ultimo_scrape": ahora,
                 "estado": "error",
-                "ultimo_error": r["error"],
+                "ultimo_error": error_msg,
             }, merge=True)
             continue
 
@@ -96,6 +107,7 @@ def main():
             "ultimo_precio_desc_bs": r["precio_desc_bs"],
             "ultimo_nombre": r["nombre"],
             "estado": "ok",
+            "actualizado_manualmente": firestore.DELETE_FIELD,
         }, merge=True)
 
         ok += 1

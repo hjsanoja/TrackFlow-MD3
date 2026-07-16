@@ -18,7 +18,7 @@ export default function Dashboard({ user, userDoc }) {
   const [search, setSearch] = useState('');
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('Todas');
   const [selectedProduct, setSelectedProduct] = useState(null);
-  const [dashboardPriceMode, setDashboardPriceMode] = useState('descuento');
+  const [dashboardPriceMode, setDashboardPriceMode] = useState('lista');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState(null);
@@ -363,6 +363,8 @@ export default function Dashboard({ user, userDoc }) {
     // Own Brand leadership: how many times is our brand (tipo === 'propio') the cheapest or below market average?
     let ownBrandTotal = 0;
     let ownBrandLider = 0;
+    let totalDiffVsMin = 0;
+    let diffVsMinCount = 0;
     analizados.forEach(item => {
       const propio = item.competencia.find(c => c.tipo === 'propio');
       if (propio) {
@@ -376,6 +378,10 @@ export default function Dashboard({ user, userDoc }) {
             if (propioPrice <= minAlt) {
               ownBrandLider++;
             }
+            // Difference percentage of own price versus the minimum alternative
+            const diffPct = ((propioPrice - minAlt) / minAlt) * 100;
+            totalDiffVsMin += diffPct;
+            diffVsMinCount++;
           } else {
             // No alternatives, we are the only ones
             ownBrandLider++;
@@ -385,11 +391,7 @@ export default function Dashboard({ user, userDoc }) {
     });
 
     const porcentajeLiderazgoPropio = ownBrandTotal > 0 ? Math.round((ownBrandLider / ownBrandTotal) * 100) : 100;
-
-    // Technical health of links: how many active links have estado === 'ok'
-    const totalEnlacesActivos = productosCompetencia.filter(pc => pc.activo).length;
-    const enlacesOk = productosCompetencia.filter(pc => pc.activo && pc.estado === 'ok').length;
-    const tasaSaludTecnica = totalEnlacesActivos > 0 ? Math.round((enlacesOk / totalEnlacesActivos) * 100) : 100;
+    const brechaPromedioVsMin = diffVsMinCount > 0 ? (totalDiffVsMin / diffVsMinCount) : 0;
 
     // Arbitrage Opportunity detection (> 15% dispersion)
     let arbitrajeInfo = null;
@@ -417,7 +419,7 @@ export default function Dashboard({ user, userDoc }) {
       maxDispersionProd,
       bestChain: maxCheapCount > 0 ? `${bestChain} (${maxCheapCount} prods)` : '—',
       porcentajeLiderazgoPropio,
-      tasaSaludTecnica,
+      brechaPromedioVsMin,
       arbitrajeInfo
     };
   }, [analizados, cadenasUnicas, productosCompetencia]);
@@ -433,9 +435,10 @@ export default function Dashboard({ user, userDoc }) {
   };
 
   const getPriceForCell = (chainPrices, cadena) => {
-    const matched = chainPrices.find(c => c.cadena === cadena);
-    if (!matched) return null;
-    return matched.priceUsd;
+    const matches = chainPrices.filter(c => c.cadena === cadena);
+    if (matches.length === 0) return null;
+    const prices = matches.map(m => m.priceUsd);
+    return Math.min(...prices);
   };
 
   // CSV intelligence report generation
@@ -675,8 +678,8 @@ export default function Dashboard({ user, userDoc }) {
           {/* Own Brand Leadership */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Liderazgo de Canasta</span>
-              <span className="text-[10px] text-on-surface-variant font-sans">Mi marca es la más barata</span>
+              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Liderazgo en Precios</span>
+              <span className="text-[10px] text-on-surface-variant font-sans">Porcentaje de productos donde somos líderes</span>
             </div>
             <div className="flex items-center gap-1.5">
               <span className="text-base font-extrabold font-mono text-secondary">{kpiStats.porcentajeLiderazgoPropio}%</span>
@@ -684,27 +687,31 @@ export default function Dashboard({ user, userDoc }) {
             </div>
           </div>
 
-          {/* SUNDDE Compliance */}
+          {/* Average Price Gap vs Leader */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Cumplimiento SUNDDE</span>
-              <span className="text-[10px] text-on-surface-variant font-sans">Margen regulado de ganancia</span>
+              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Brecha vs Opción Más Barata</span>
+              <span className="text-[10px] text-on-surface-variant font-sans">Nuestros precios comparados con el líder</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-base font-extrabold font-mono text-green-700">100%</span>
-              <span className="material-symbols-outlined text-sm text-green-600">gavel</span>
+              <span className={`text-base font-extrabold font-mono ${kpiStats.brechaPromedioVsMin <= 0 ? 'text-green-700' : 'text-amber-700'}`}>
+                {kpiStats.brechaPromedioVsMin > 0 ? '+' : ''}{kpiStats.brechaPromedioVsMin.toFixed(1)}%
+              </span>
+              <span className={`material-symbols-outlined text-sm ${kpiStats.brechaPromedioVsMin <= 0 ? 'text-green-600' : 'text-amber-600'}`}>
+                {kpiStats.brechaPromedioVsMin <= 0 ? 'check_circle' : 'trending_up'}
+              </span>
             </div>
           </div>
 
-          {/* Scraper Technical Health */}
+          {/* High Price Variation SKUs */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
-              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Salud Técnica de Lectura</span>
-              <span className="text-[10px] text-on-surface-variant font-sans">Enlaces activos sin fallos</span>
+              <span className="text-xs font-bold text-[#1c1b1f] block leading-none">Medicamentos con Alta Variación</span>
+              <span className="text-[10px] text-on-surface-variant font-sans">Diferencias mayores al 20% entre farmacias</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="text-base font-extrabold font-mono text-primary">{kpiStats.tasaSaludTecnica}%</span>
-              <span className="material-symbols-outlined text-sm text-primary">cloud_done</span>
+              <span className="text-base font-extrabold font-mono text-error">{altaVolatilidad.length} SKUs</span>
+              <span className="material-symbols-outlined text-sm text-error">warning</span>
             </div>
           </div>
         </div>
@@ -868,11 +875,28 @@ export default function Dashboard({ user, userDoc }) {
                 </tr>
               ) : (
                 filas.map(({ producto, competencia, chainPrices, avgCompUsd, minCompUsd, maxCompUsd, dispersionPercent, cheapestChains, propioPriceUsd, diffMinPercent, diffAvgPercent }) => {
+                  const alts = competencia.filter(c => c.tipo === 'alternativa');
+                  const tieneAltsValidas = alts.some(a => {
+                    const pBs = dashboardPriceMode === 'descuento' ? (a.ultimo_precio_desc_bs || a.ultimo_precio_full_bs) : a.ultimo_precio_full_bs;
+                    return pBs && pBs > 0;
+                  });
+                  const tieneLiderazgo = propioPriceUsd !== null && (
+                    !tieneAltsValidas || (diffMinPercent !== null && diffMinPercent <= 0.01)
+                  );
+
                   return (
                     <tr key={producto.id_interno} onClick={() => setSelectedProduct({ producto, competencia })}
                       className="hover:bg-surface-low cursor-pointer transition-colors">
                       <td className="px-6 py-4">
-                        <div className="font-bold text-on-surface font-display text-sm">{producto.nombre}</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-bold text-on-surface font-display text-sm">{producto.nombre}</span>
+                          {tieneLiderazgo && (
+                            <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-full text-[9px] font-bold font-mono bg-green-100 text-green-800 border border-green-200" title="Mi marca es la opción más barata del mercado para este producto">
+                              <span className="material-symbols-outlined text-[10px] leading-none">star</span>
+                              Líder en Precios
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[10px] text-on-surface-variant font-mono mt-0.5">{producto.id_interno} · {producto.laboratorio}</div>
                       </td>
 

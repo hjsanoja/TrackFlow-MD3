@@ -48,7 +48,7 @@ function CustomTooltip({ active, payload, label, propios, labMap, currency }) {
                 <div className="flex flex-col">
                   <span className={`font-semibold ${isPropio ? 'text-[#2e7d32]' : isPromedio ? 'text-[#ea580c]' : 'text-[#1c1b1f]'}`}>
                     {pld.name}
-                    {isPropio && ' (Mi Marca)'}
+                    {isPropio && (pld.name.includes('(') ? ' (Mi Marca)' : ' (Mi Cadena)')}
                   </span>
                   {lab && (
                     <span className="text-[10px] text-[#464650]/80 font-sans leading-none mt-0.5">
@@ -76,6 +76,8 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [priceMode, setPriceMode] = useState(initialPriceMode);
+  const [modalCurrency, setModalCurrency] = useState(currency || 'usd');
+  const [chartViewType, setChartViewType] = useState('individual'); // 'individual' or 'chainAverage'
 
   // Filters inside modal
   const [filterRelacion, setFilterRelacion] = useState('todos'); // 'todos', 'propio', 'competencia'
@@ -128,14 +130,25 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
     })();
   }, [producto.id_interno]);
 
-  // Pivot: convertir historico en serie por marca-cadena, agrupado por dia.
+  // Pivot: convertir historico en serie por marca-cadena o por promedio de cadena, agrupado por dia.
   const chartData = (() => {
     const byDate = new Map();
     const marcasVistas = new Set();
     const propios = new Set();
 
+    const byDateChain = new Map();
+    const chainsVistas = new Set();
+
     for (const h of historico) {
       if (!h.scraped_at) continue;
+
+      // Apply chain and relation filters to the history to filter chart as requested
+      const matchRelacion = filterRelacion === 'todos' || 
+        (filterRelacion === 'propio' && h.tipo === 'propio') || 
+        (filterRelacion === 'competencia' && h.tipo !== 'propio');
+      const matchCadena = filterCadena === 'todas' || h.cadena === filterCadena;
+      if (!matchRelacion || !matchCadena) continue;
+
       const dateKey = h.scraped_at.toISOString().slice(0, 10);
       const marca = `${h.marca} (${h.cadena})`;
       marcasVistas.add(marca);
@@ -148,16 +161,25 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
         ? (h.precio_desc_bs || h.precio_full_bs)
         : h.precio_full_bs;
       if (!precioBs) continue;
-      const precio = currency === 'usd' && bcvRate ? precioBs / bcvRate : precioBs;
+      const precio = modalCurrency === 'usd' && bcvRate ? precioBs / bcvRate : precioBs;
 
+      // 1. Individual Brand structure
       if (!byDate.has(dateKey)) byDate.set(dateKey, { date: dateKey });
       byDate.get(dateKey)[marca] = parseFloat(precio.toFixed(2));
+
+      // 2. Chain Average structure
+      if (!byDateChain.has(dateKey)) byDateChain.set(dateKey, { date: dateKey });
+      if (!byDateChain.get(dateKey)[h.cadena]) {
+        byDateChain.get(dateKey)[h.cadena] = { sum: 0, count: 0 };
+      }
+      byDateChain.get(dateKey)[h.cadena].sum += precio;
+      byDateChain.get(dateKey)[h.cadena].count += 1;
+      chainsVistas.add(h.cadena);
     }
 
-    const data = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
-    
-    // Calcular el promedio por fecha y añadirlo a cada item
-    data.forEach(item => {
+    // Process individual series
+    const dataIndividual = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+    dataIndividual.forEach(item => {
       const keys = Object.keys(item).filter(k => k !== 'date');
       if (keys.length > 0) {
         const sum = keys.reduce((acc, k) => acc + item[k], 0);
@@ -165,10 +187,35 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
       }
     });
 
+    // Process chain average series
+    const dataChainRaw = Array.from(byDateChain.values()).sort((a, b) => a.date.localeCompare(b.date));
+    const dataChain = dataChainRaw.map(item => {
+      const newItem = { date: item.date };
+      const chainKeys = Object.keys(item).filter(k => k !== 'date');
+      let totalSum = 0;
+      let totalCount = 0;
+      chainKeys.forEach(ch => {
+        const avg = item[ch].sum / item[ch].count;
+        newItem[ch] = parseFloat(avg.toFixed(2));
+        totalSum += item[ch].sum;
+        totalCount += item[ch].count;
+      });
+      if (totalCount > 0) {
+        newItem['Promedio'] = parseFloat((totalSum / totalCount).toFixed(2));
+      }
+      return newItem;
+    });
+
     return {
-      data,
-      marcas: Array.from(marcasVistas),
-      propios,
+      individual: {
+        data: dataIndividual,
+        marcas: Array.from(marcasVistas),
+        propios,
+      },
+      chainAverage: {
+        data: dataChain,
+        cadenas: Array.from(chainsVistas),
+      }
     };
   })();
 
@@ -191,7 +238,9 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   // Filtered competition list for table
   const competenciaFiltrada = useMemo(() => {
     return competencia.filter(pc => {
-      const matchRelacion = filterRelacion === 'todos' || pc.tipo === filterRelacion;
+      const matchRelacion = filterRelacion === 'todos' || 
+        (filterRelacion === 'propio' && pc.tipo === 'propio') || 
+        (filterRelacion === 'competencia' && pc.tipo !== 'propio');
       const matchCadena = filterCadena === 'todas' || pc.cadena === filterCadena;
       return matchRelacion && matchCadena;
     });
@@ -239,8 +288,8 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   const diffAvgBs = (propioPriceBs !== null && avgPriceBs !== null) ? propioPriceBs - avgPriceBs : null;
   const pctAvg = (diffAvgBs !== null && avgPriceBs > 0) ? (diffAvgBs / avgPriceBs) * 100 : null;
 
-  const getLineColor = (marcaName, index) => {
-    if (chartData.propios.has(marcaName)) {
+  const getLineColor = (marcaName, index, isPropioChain = false) => {
+    if (isPropioChain || (chartData?.individual?.propios && chartData.individual.propios.has(marcaName))) {
       return '#2e7d32'; // Green for Propio
     }
     const competitorColors = ['#040d53', '#ba1a1a', '#004ecb', '#0891b2', '#db2777', '#8b5cf6', '#ea580c', '#3b82f6'];
@@ -249,7 +298,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
   const formatHeaderPrice = (priceBs) => {
     if (priceBs == null) return '—';
-    if (currency === 'usd') {
+    if (modalCurrency === 'usd') {
       if (!bcvRate) return '—';
       return '$' + (priceBs / bcvRate).toFixed(2);
     }
@@ -275,36 +324,112 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
         {/* Content Area */}
         <div className="p-6 space-y-6 overflow-y-auto">
-          {/* Price Switch Controls */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#f3f4f9] p-3 rounded-2xl border border-[#e1e2ec] animate-fade-in">
-            <div className="flex items-center gap-2">
-              <span className="material-symbols-outlined text-[#040d53] text-lg">payments</span>
-              <span className="text-xs font-bold uppercase tracking-wider text-[#464650] font-mono">Modo de Comparación:</span>
+          {/* Price and Currency Switch Controls */}
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-[#f3f4f9] p-4 rounded-2xl border border-[#e1e2ec] animate-fade-in">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 flex-1">
+              {/* Modo de Comparacion Selector */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5 text-[#464650]">
+                  <span className="material-symbols-outlined text-[16px]">receipt_long</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Comparación:</span>
+                </div>
+                <div className="bg-[#e1e2ec] p-1 rounded-xl flex gap-1 h-[34px] items-center">
+                  <button
+                    onClick={() => setPriceMode('descuento')}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1 ${
+                      priceMode === 'descuento' 
+                        ? 'bg-white text-[#040d53] shadow-sm' 
+                        : 'text-[#464650] hover:bg-white/50'
+                    }`}
+                  >
+                    Oferta
+                  </button>
+                  <button
+                    onClick={() => setPriceMode('lista')}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1 ${
+                      priceMode === 'lista' 
+                        ? 'bg-white text-[#040d53] shadow-sm' 
+                        : 'text-[#464650] hover:bg-white/50'
+                    }`}
+                  >
+                    Lista
+                  </button>
+                </div>
+              </div>
+
+              {/* Moneda Selector */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5 text-[#464650]">
+                  <span className="material-symbols-outlined text-[16px]">monetization_on</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Moneda en Modal:</span>
+                </div>
+                <div className="bg-[#e1e2ec] p-1 rounded-xl flex gap-1 h-[34px] items-center">
+                  <button
+                    onClick={() => setModalCurrency('usd')}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-bold transition-all ${
+                      modalCurrency === 'usd' 
+                        ? 'bg-white text-[#040d53] shadow-sm' 
+                        : 'text-[#464650] hover:bg-white/50'
+                    }`}
+                  >
+                    USD ($)
+                  </button>
+                  <button
+                    onClick={() => setModalCurrency('bs')}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-bold transition-all ${
+                      modalCurrency === 'bs' 
+                        ? 'bg-white text-[#040d53] shadow-sm' 
+                        : 'text-[#464650] hover:bg-white/50'
+                    }`}
+                  >
+                    Bs
+                  </button>
+                </div>
+              </div>
+
+              {/* Relación Selector */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5 text-[#464650]">
+                  <span className="material-symbols-outlined text-[16px]">groups</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Relación de Marca:</span>
+                </div>
+                <select
+                  value={filterRelacion}
+                  onChange={(e) => setFilterRelacion(e.target.value)}
+                  className="bg-white border border-[#e1e2ec] rounded-xl px-2.5 py-1 text-[11px] font-bold focus:outline-none focus:border-[#040d53] text-[#464650] h-[34px] w-full"
+                >
+                  <option value="todos">Todos</option>
+                  <option value="propio">Mi Marca</option>
+                  <option value="competencia">Competidores</option>
+                </select>
+              </div>
+
+              {/* Cadena Selector */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5 text-[#464650]">
+                  <span className="material-symbols-outlined text-[16px]">storefront</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Filtrar por Cadena:</span>
+                </div>
+                <select
+                  value={filterCadena}
+                  onChange={(e) => setFilterCadena(e.target.value)}
+                  className="bg-white border border-[#e1e2ec] rounded-xl px-2.5 py-1 text-[11px] font-bold focus:outline-none focus:border-[#040d53] text-[#464650] h-[34px] w-full"
+                >
+                  <option value="todas">Todas</option>
+                  {cadenasDisponibles.map(c => (
+                    <option key={c} value={c}>{c}</option>
+                  ))}
+                </select>
+              </div>
             </div>
-            <div className="bg-[#e1e2ec] p-1 rounded-xl flex gap-1 self-start sm:self-auto">
-              <button
-                onClick={() => setPriceMode('descuento')}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1.5 ${
-                  priceMode === 'descuento' 
-                    ? 'bg-white text-[#040d53] shadow-sm' 
-                    : 'text-[#464650] hover:bg-white/50'
-                }`}
-              >
-                <span className="material-symbols-outlined text-[14px]">sell</span>
-                Con Descuento / Oferta
-              </button>
-              <button
-                onClick={() => setPriceMode('lista')}
-                className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all flex items-center gap-1.5 ${
-                  priceMode === 'lista' 
-                    ? 'bg-white text-[#040d53] shadow-sm' 
-                    : 'text-[#464650] hover:bg-white/50'
-                }`}
-              >
-                <span className="material-symbols-outlined text-[14px]">receipt_long</span>
-                Precio de Lista (Full)
-              </button>
-            </div>
+
+            {/* BCV Rate Badge */}
+            {bcvRate && (
+              <div className="flex items-center gap-2 bg-white/60 border border-[#e1e2ec] px-3 py-2 rounded-xl text-[11px] font-mono text-[#464650] self-start xl:self-auto min-w-[110px] justify-center h-[34px] mt-auto">
+                <span className="text-[9px] uppercase font-bold text-[#464650]/70">Tasa BCV:</span>
+                <span className="font-extrabold text-[#040d53]">Bs {bcvRate.toFixed(2)}</span>
+              </div>
+            )}
           </div>
 
           {/* Smart Indicators Card Grid */}
@@ -390,32 +515,6 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                 <span className="material-symbols-outlined text-sm">payments</span>
                 Precios Actuales por Cadena Farmacéutica
               </h3>
-
-              {/* Table Filters */}
-              <div className="flex gap-2 flex-wrap">
-                {/* Relación Filter */}
-                <select
-                  value={filterRelacion}
-                  onChange={(e) => setFilterRelacion(e.target.value)}
-                  className="bg-white border border-[#e1e2ec] rounded-xl px-2.5 py-1 text-xs font-bold focus:outline-none focus:border-[#040d53] text-[#464650]"
-                >
-                  <option value="todos">Todos los productos</option>
-                  <option value="propio">Mi Marca (Propio)</option>
-                  <option value="competencia">Competidores</option>
-                </select>
-
-                {/* Cadena Filter */}
-                <select
-                  value={filterCadena}
-                  onChange={(e) => setFilterCadena(e.target.value)}
-                  className="bg-white border border-[#e1e2ec] rounded-xl px-2.5 py-1 text-xs font-bold focus:outline-none focus:border-[#040d53] text-[#464650]"
-                >
-                  <option value="todas">Todas las cadenas</option>
-                  {cadenasDisponibles.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
             </div>
 
             <div className="border border-[#e1e2ec] rounded-2xl overflow-hidden bg-white shadow-sm">
@@ -445,7 +544,22 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                         <tr key={pc.id} className="hover:bg-[#f8f9fa] transition-colors">
                           <td className="px-5 py-3 font-bold text-[#040d53]">{pc.cadena}</td>
                           <td className="px-5 py-3 font-semibold text-[#1c1b1f]">
-                            <div>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</div>
+                            {pc.url ? (
+                              <a
+                                href={pc.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-primary hover:underline hover:text-[#040d53] inline-flex items-center gap-1 group transition-all"
+                                title="Ver enlace de origen del producto ↗"
+                              >
+                                <span className="font-semibold">{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</span>
+                                <span className="material-symbols-outlined text-[13px] text-primary/70 group-hover:text-[#040d53] transition-colors leading-none">
+                                  open_in_new
+                                </span>
+                              </a>
+                            ) : (
+                              <div>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</div>
+                            )}
                             {pc.laboratorio && (
                               <div className="text-[10px] text-[#464650] font-normal mt-0.5">Lab: {pc.laboratorio}</div>
                             )}
@@ -495,7 +609,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
             <div className="flex justify-between items-center">
               <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
                 <span className="material-symbols-outlined text-sm">show_chart</span>
-                Historial de Tendencia de Precios ({currency === 'usd' ? 'USD $' : 'Bs'})
+                Historial de Tendencia de Precios ({modalCurrency === 'usd' ? 'USD $' : 'Bs'})
               </h3>
               {historico.length > 0 && (
                 <button
@@ -507,7 +621,41 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                 </button>
               )}
             </div>
-            <div className="bg-white rounded-2xl border border-[#e1e2ec] p-4 shadow-sm">
+            <div className="bg-white rounded-2xl border border-[#e1e2ec] p-4 shadow-sm space-y-4">
+              {/* Selector de tipo de gráfico */}
+              {historico.length > 0 && !loading && !error && (
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#e1e2ec] animate-fade-in">
+                  <div className="flex items-center gap-1.5 text-[#464650]">
+                    <span className="material-symbols-outlined text-[16px]">insights</span>
+                    <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Modo del Gráfico:</span>
+                  </div>
+                  <div className="bg-[#f3f4f9] p-0.5 rounded-xl flex gap-1 self-start sm:self-auto border border-[#e1e2ec]">
+                    <button
+                      onClick={() => setChartViewType('individual')}
+                      className={`px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                        chartViewType === 'individual'
+                          ? 'bg-white text-[#040d53] shadow-sm'
+                          : 'text-[#464650] hover:bg-white/50'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">medication</span>
+                      Detalle por Variante
+                    </button>
+                    <button
+                      onClick={() => setChartViewType('chainAverage')}
+                      className={`px-3 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                        chartViewType === 'chainAverage'
+                          ? 'bg-white text-[#040d53] shadow-sm'
+                          : 'text-[#464650] hover:bg-white/50'
+                      }`}
+                    >
+                      <span className="material-symbols-outlined text-[14px]">corporate_fare</span>
+                      Promedio por Cadena
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {loading ? (
                 <div className="h-64 flex flex-col items-center justify-center text-xs text-[#464650] font-semibold gap-1.5 animate-pulse">
                   <span className="material-symbols-outlined animate-spin text-2xl text-[#040d53]">autorenew</span>
@@ -515,14 +663,14 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                 </div>
               ) : error ? (
                 <div className="h-64 flex items-center justify-center text-[#ba1a1a] text-xs font-mono font-bold">{error}</div>
-              ) : chartData.data.length === 0 ? (
-                <div className="h-64 flex items-center justify-center text-[#464650] text-xs italic">
-                  Aún no hay suficiente historial acumulado. Las corridas automáticas generarán los registros de tendencia.
+              ) : chartData[chartViewType].data.length === 0 ? (
+                <div className="h-64 flex items-center justify-center text-[#464650] text-xs italic text-center px-4">
+                  No hay suficiente historial que coincida con los filtros seleccionados (relación / cadena) para este gráfico.
                 </div>
               ) : (
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={chartData.data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <LineChart data={chartData[chartViewType].data} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f3f3f6" />
                       <XAxis 
                         dataKey="date" 
@@ -538,25 +686,55 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                         tick={{ fontSize: 11, fill: '#464650' }} 
                       />
                       <YAxis tick={{ fontSize: 11, fill: '#464650' }} />
-                      <Tooltip content={<CustomTooltip propios={Array.from(chartData.propios)} labMap={Object.fromEntries(labMap)} currency={currency} />} />
+                      <Tooltip content={(props) => (
+                        <CustomTooltip 
+                          {...props} 
+                          propios={chartViewType === 'individual' 
+                            ? Array.from(chartData.individual.propios) 
+                            : (propioItem ? [propioItem.cadena] : [])
+                          } 
+                          labMap={chartViewType === 'individual' ? Object.fromEntries(labMap) : {}} 
+                          currency={modalCurrency} 
+                        />
+                      )} />
                       <Legend wrapperStyle={{ fontSize: 11, marginTop: 10 }} />
-                      {chartData.marcas.map((m, i) => {
-                        const isPropio = chartData.propios.has(m);
-                        return (
-                          <Line
-                            key={m}
-                            type="monotone"
-                            dataKey={m}
-                            name={isPropio ? `${m} ⭐ (Mi Marca)` : m}
-                            stroke={getLineColor(m, i)}
-                            strokeWidth={isPropio ? 4.5 : 2}
-                            dot={{ r: isPropio ? 5 : 3 }}
-                            connectNulls
-                          />
-                        );
-                      })}
+                      
+                      {chartViewType === 'individual' ? (
+                        chartData.individual.marcas.map((m, i) => {
+                          const isPropio = chartData.individual.propios.has(m);
+                          return (
+                            <Line
+                              key={m}
+                              type="monotone"
+                              dataKey={m}
+                              name={isPropio ? `${m} ⭐ (Mi Marca)` : m}
+                              stroke={getLineColor(m, i)}
+                              strokeWidth={isPropio ? 4.5 : 2}
+                              dot={{ r: isPropio ? 5 : 3 }}
+                              connectNulls
+                            />
+                          );
+                        })
+                      ) : (
+                        chartData.chainAverage.cadenas.map((c, i) => {
+                          const isPropioChain = propioItem && propioItem.cadena === c;
+                          return (
+                            <Line
+                              key={c}
+                              type="monotone"
+                              dataKey={c}
+                              name={isPropioChain ? `${c} ⭐ (Mi Cadena)` : c}
+                              stroke={getLineColor(c, i, isPropioChain)}
+                              strokeWidth={isPropioChain ? 4.5 : 2}
+                              dot={{ r: isPropioChain ? 5 : 3 }}
+                              connectNulls
+                            />
+                          );
+                        })
+                      )}
+
                       {/* Línea especial para el Promedio del mercado */}
-                      {chartData.data.length > 0 && (
+                      {chartData[chartViewType].data.length > 0 && (
                         <Line
                           type="monotone"
                           dataKey="Promedio"
