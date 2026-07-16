@@ -316,10 +316,19 @@ def scrape_url(page, url, marca, thread_id=1):
 
                 function extractPricesFromText(text) {
                     if (!text) return [];
-                    const regex = /(?:Bs\\.?|Ref\\.?|\\$)?\\s*(\\d+(?:[.,]\\d+)*)/gi;
+                    // Exigimos que el número esté precedido o sucedido por un indicador de moneda claro
+                    // para evitar capturar minutos (ej: '35min'), tabletas (ej: '10 tabletas') o miligramos (ej: '650mg').
+                    const regexPrefix = /(?:Bs\\.?|BsS\\.?|Ref\\.?|\\$|USD|VES|Dolares|Dólares)\\s*(\\d+(?:[.,]\\d+)*)/gi;
+                    const regexSuffix = /(\\d+(?:[.,]\\d+)*)\\s*(?:Bs\\.?|BsS\\.?|Ref\\.?|\\$|USD|VES|Dolares|Dólares)/gi;
                     const matches = [];
                     let m;
-                    while ((m = regex.exec(text)) !== null) {
+                    while ((m = regexPrefix.exec(text)) !== null) {
+                        const num = jsParsePrice(m[1]);
+                        if (num !== null && num > 0.1 && num < 100000) {
+                            matches.push(num);
+                        }
+                    }
+                    while ((m = regexSuffix.exec(text)) !== null) {
                         const num = jsParsePrice(m[1]);
                         if (num !== null && num > 0.1 && num < 100000) {
                             matches.push(num);
@@ -419,14 +428,23 @@ def scrape_url(page, url, marca, thread_id=1):
 
                 let activeEl = null;
                 for (const sel of activeSelectors) {
-                    const el = container ? container.querySelector(sel) : document.querySelector(sel);
-                    if (el) { activeEl = el; break; }
+                    // Primero intentamos búsqueda en todo el documento para clases altamente específicas
+                    if (sel.includes('active') || sel.includes('sellingPrice') || sel.includes('selling')) {
+                        activeEl = document.querySelector(sel);
+                        if (activeEl) break;
+                    }
+                    activeEl = container ? container.querySelector(sel) : document.querySelector(sel);
+                    if (activeEl) break;
                 }
 
                 let originalEl = null;
                 for (const sel of originalSelectors) {
-                    const el = container ? container.querySelector(sel) : document.querySelector(sel);
-                    if (el) { originalEl = el; break; }
+                    if (sel.includes('original') || sel.includes('old') || sel.includes('list')) {
+                        originalEl = document.querySelector(sel);
+                        if (originalEl) break;
+                    }
+                    originalEl = container ? container.querySelector(sel) : document.querySelector(sel);
+                    if (originalEl) break;
                 }
 
                 let active_text = activeEl ? (activeEl.innerText || activeEl.textContent || '').trim() : null;
@@ -462,11 +480,17 @@ def scrape_url(page, url, marca, thread_id=1):
 
                     try {
                         const priceElements = Array.from(document.querySelectorAll('*')).filter(el => {
-                            if (el.children.length > 0) return false; // solo hojas
                             const t = (el.innerText || el.textContent || '').trim();
                             const t_lower = t.toLowerCase();
                             const hasBs = t_lower.includes('bs') || t_lower.includes('bolivar') || t_lower.includes('ves');
-                            return hasBs && /\d+/.test(t);
+                            if (!hasBs || !/\d+/.test(t)) return false;
+                            
+                            // Si tiene un hijo con "Bs" y dígitos, preferimos el hijo para más especificidad
+                            const hasChildWithPrice = Array.from(el.children).some(child => {
+                                const ct = (child.innerText || child.textContent || '').trim().toLowerCase();
+                                return (ct.includes('bs') || ct.includes('bolivar') || ct.includes('ves')) && /\d+/.test(ct);
+                            });
+                            return !hasChildWithPrice;
                         });
                         
                         if (priceElements.length > 0) {
@@ -487,9 +511,16 @@ def scrape_url(page, url, marca, thread_id=1):
 
                     try {
                         const refElements = Array.from(document.querySelectorAll('*')).filter(el => {
-                            if (el.children.length > 0) return false;
                             const t = (el.innerText || el.textContent || '').trim();
-                            return (t.includes('Ref') || t.includes('$') || t.includes('USD')) && /\d+/.test(t);
+                            const t_lower = t.toLowerCase();
+                            const hasRef = t_lower.includes('ref') || t_lower.includes('$') || t_lower.includes('usd');
+                            if (!hasRef || !/\d+/.test(t)) return false;
+                            
+                            const hasChildWithRef = Array.from(el.children).some(child => {
+                                const ct = (child.innerText || child.textContent || '').trim().toLowerCase();
+                                return (ct.includes('ref') || ct.includes('$') || ct.includes('usd')) && /\d+/.test(ct);
+                            });
+                            return !hasChildWithRef;
                         });
                         if (refElements.length > 0) {
                             let minDist = Infinity;
