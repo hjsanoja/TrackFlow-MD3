@@ -4,6 +4,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
+import { useToast } from '../context/ToastContext';
 
 const CATEGORIAS = [
   'Analgésicos',
@@ -26,9 +27,10 @@ export default function Productos() {
   const [search, setSearch] = useState('');
   const [filtroActivo, setFiltroActivo] = useState('todos');
   const [filtroUrls, setFiltroUrls] = useState('todos'); // todos | con_urls | sin_urls
-  const [message, setMessage] = useState(null);
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const { addToast } = useToast();
 
   const fileInputRef = useRef(null);
 
@@ -46,7 +48,7 @@ export default function Productos() {
       setCompetencia(pcSnap.docs.map(d => ({ id: d.id, ...d.data() })));
       setCadenas(cSnap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al cargar: ' + err.message });
+      addToast('Error al cargar: ' + err.message, 'error');
     }
     setLoading(false);
   };
@@ -136,11 +138,11 @@ export default function Productos() {
 
       await batch.commit();
 
-      setMessage({ type: 'success', text: isNew ? 'Producto y enlaces creados con éxito' : 'Producto actualizado con éxito' });
+      addToast(isNew ? 'Producto y enlaces creados con éxito' : 'Producto actualizado con éxito', 'success');
       setEditing(null);
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -164,10 +166,10 @@ export default function Productos() {
         });
         await batch.commit();
       }
-      setMessage({ type: 'success', text: 'Producto y sus enlaces de competencia eliminados' });
+      addToast('Producto y sus enlaces de competencia eliminados con éxito.', 'success');
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al eliminar: ' + err.message });
+      addToast('Error al eliminar: ' + err.message, 'error');
     }
   };
 
@@ -178,7 +180,7 @@ export default function Productos() {
       }, { merge: true });
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -246,13 +248,13 @@ export default function Productos() {
 
         if (count > 0) {
           await batch.commit();
-          setMessage({ type: 'success', text: `Carga masiva exitosa: ${count} productos registrados en el catálogo.` });
+          addToast(`Carga masiva exitosa: ${count} productos registrados en el catálogo.`, 'success');
           await cargar();
         } else {
           throw new Error('No se encontraron filas válidas con ID y Nombre.');
         }
       } catch (err) {
-        setMessage({ type: 'error', text: 'Error procesando CSV: ' + err.message });
+        addToast('Error procesando CSV: ' + err.message, 'error');
       }
       setShowCsvModal(false);
     };
@@ -376,19 +378,6 @@ export default function Productos() {
         </div>
       )}
 
-      {message && (
-        <div className={`px-4 py-3.5 rounded-2xl text-sm font-semibold flex items-center justify-between border ${
-          message.type === 'success' ? 'bg-[#f0f9eb] border-[#c2e7b0] text-[#3c763d]'
-          : 'bg-error-container text-error border border-error/20'
-        }`}>
-          <span className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg">{message.type === 'success' ? 'check_circle' : 'error'}</span>
-            {message.text}
-          </span>
-          <button onClick={() => setMessage(null)} className="ml-2 text-current hover:opacity-75 font-bold">×</button>
-        </div>
-      )}
-
       {/* Structured Grid & Filters Area */}
       <div className="bg-white rounded-3xl border border-outline-variant p-5 flex flex-wrap items-center justify-between gap-4 shadow-sm">
         <div className="flex-1 min-w-[280px] relative">
@@ -422,9 +411,38 @@ export default function Productos() {
       {/* Main Table View */}
       <div className="bg-white rounded-3xl border border-outline-variant shadow-sm overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-on-surface-variant font-semibold animate-pulse flex flex-col items-center justify-center gap-2">
-            <span className="material-symbols-outlined animate-spin text-3xl text-primary">autorenew</span>
-            Cargando catálogo...
+          <div className="overflow-x-auto animate-pulse">
+            <table className="w-full text-sm border-collapse">
+              <thead className="bg-surface-low text-primary text-xs uppercase font-mono tracking-wider border-b border-outline-variant">
+                <tr>
+                  <th className="text-left px-6 py-4 font-bold">ID</th>
+                  <th className="text-left px-6 py-4 font-bold">Nombre / Molécula</th>
+                  <th className="text-left px-6 py-4 font-bold">Concentración / Tamaño</th>
+                  <th className="text-left px-6 py-4 font-bold">Laboratorio</th>
+                  <th className="text-left px-6 py-4 font-bold">Categoría</th>
+                  <th className="text-center px-6 py-4 font-bold">Enlaces Activos</th>
+                  <th className="text-center px-6 py-4 font-bold">Estado</th>
+                  <th className="text-right px-6 py-4 font-bold">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline-variant/30">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <tr key={n}>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-16"></div></td>
+                    <td className="px-6 py-4">
+                      <div className="h-4 bg-gray-200 rounded w-48 mb-1.5"></div>
+                      <div className="h-3 bg-gray-100 rounded w-32"></div>
+                    </td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-24"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-28"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-24"></div></td>
+                    <td className="px-6 py-4 text-center"><div className="h-4 bg-gray-200 rounded w-8 mx-auto"></div></td>
+                    <td className="px-6 py-4"><div className="h-6 bg-gray-200 rounded-full w-14 mx-auto"></div></td>
+                    <td className="px-6 py-4 text-right"><div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : filtrados.length === 0 ? (
           <div className="p-12 text-center text-on-surface-variant italic">

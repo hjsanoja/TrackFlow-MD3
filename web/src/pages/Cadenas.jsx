@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
+import { useToast } from '../context/ToastContext';
 
 // Scrapers disponibles en el código actual
 const SCRAPERS_DISPONIBLES = [
@@ -21,8 +22,9 @@ export default function Cadenas() {
   const [competencia, setCompetencia] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
-  const [message, setMessage] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const { addToast } = useToast();
 
   const cargar = async () => {
     setLoading(true);
@@ -36,7 +38,7 @@ export default function Cadenas() {
       setCadenas(docs);
       setCompetencia(pcSnap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al cargar: ' + err.message });
+      addToast('Error al cargar: ' + err.message, 'error');
     }
     setLoading(false);
   };
@@ -67,11 +69,11 @@ export default function Cadenas() {
         scraper_modulo: data.scraper_modulo,
         activo: data.activo,
       });
-      setMessage({ type: 'success', text: isNew ? 'Cadena creada con éxito' : 'Cambios guardados con éxito' });
+      addToast(isNew ? 'Cadena creada con éxito' : 'Cambios guardados con éxito', 'success');
       setEditing(null);
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -85,10 +87,10 @@ export default function Cadenas() {
     setConfirmDelete(null);
     try {
       await deleteDoc(doc(db, 'cadenas', cadena.id));
-      setMessage({ type: 'success', text: 'Cadena eliminada con éxito' });
+      addToast('Cadena eliminada con éxito', 'success');
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al eliminar: ' + err.message });
+      addToast('Error al eliminar: ' + err.message, 'error');
     }
   };
 
@@ -99,7 +101,7 @@ export default function Cadenas() {
       }, { merge: true });
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -120,19 +122,6 @@ export default function Cadenas() {
         </button>
       </div>
 
-      {message && (
-        <div className={`px-4 py-3.5 rounded-2xl text-sm font-semibold flex items-center justify-between border ${
-          message.type === 'success' ? 'bg-[#f0f9eb] border-[#c2e7b0] text-[#3c763d]'
-          : 'bg-error-container text-error border border-error/20'
-        }`}>
-          <span className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg">{message.type === 'success' ? 'check_circle' : 'error'}</span>
-            {message.text}
-          </span>
-          <button onClick={() => setMessage(null)} className="ml-2 text-current hover:opacity-75 font-bold">×</button>
-        </div>
-      )}
-
       <div className="bg-primary-container border border-outline-variant/40 rounded-2xl px-5 py-4 text-xs text-on-primary-container space-y-1.5 shadow-sm">
         <div className="flex items-center gap-2 font-mono font-bold text-sm text-primary">
           <span className="material-symbols-outlined text-lg leading-none">info</span>
@@ -146,9 +135,31 @@ export default function Cadenas() {
       {/* Main Grid View */}
       <div className="bg-white rounded-3xl border border-outline-variant shadow-sm overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-on-surface-variant font-semibold animate-pulse flex flex-col items-center justify-center gap-2">
-            <span className="material-symbols-outlined animate-spin text-3xl text-primary">autorenew</span>
-            Cargando cadenas de monitoreo...
+          <div className="overflow-x-auto animate-pulse">
+            <table className="w-full text-sm border-collapse">
+              <thead className="bg-surface-low text-primary text-xs uppercase font-mono tracking-wider border-b border-outline-variant">
+                <tr>
+                  <th className="text-left px-6 py-4 font-bold">Nombre Cadena</th>
+                  <th className="text-left px-6 py-4 font-bold">Portal Website</th>
+                  <th className="text-left px-6 py-4 font-bold">Identificador Técnico Scraper</th>
+                  <th className="text-center px-6 py-4 font-bold">URLs Activas Scrapeadas</th>
+                  <th className="text-center px-6 py-4 font-bold">Estado</th>
+                  <th className="text-right px-6 py-4 font-bold">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline-variant/30">
+                {[1, 2, 3].map((n) => (
+                  <tr key={n}>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-2/3"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-3/4"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-1/2"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-12 mx-auto"></div></td>
+                    <td className="px-6 py-4"><div className="h-6 bg-gray-200 rounded-full w-14 mx-auto"></div></td>
+                    <td className="px-6 py-4 text-right"><div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : cadenas.length === 0 ? (
           <div className="p-12 text-center text-on-surface-variant italic">

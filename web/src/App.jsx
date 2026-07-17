@@ -10,15 +10,17 @@ import Competencia from './pages/Competencia';
 import Cadenas from './pages/Cadenas';
 import Usuarios from './pages/Usuarios';
 import Layout from './components/Layout';
+import { ToastProvider, useToast } from './context/ToastContext';
 
 function emailToDocId(email) {
   return email.toLowerCase().replace('@', '_at_').replaceAll('.', '_');
 }
 
-export default function App() {
+function AppContent() {
   const [user, setUser] = useState(null);
   const [userDoc, setUserDoc] = useState(null);
   const [loading, setLoading] = useState(true);
+  const { addToast } = useToast();
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -34,15 +36,16 @@ export default function App() {
               setUserDoc(data);
             } else {
               await signOut(auth);
-              alert('Tu usuario está inactivo.');
+              addToast('Tu usuario está inactivo. Contacta a un administrador.', 'error');
             }
           } else {
             await signOut(auth);
-            alert('Tu usuario no está registrado.');
+            addToast('Tu usuario no está registrado en el sistema.', 'error');
           }
         } catch (err) {
           console.error('Error:', err?.message || String(err));
           await signOut(auth);
+          addToast('Error de autenticación: ' + err.message, 'error');
         }
       } else {
         setUser(null);
@@ -51,12 +54,13 @@ export default function App() {
       setLoading(false);
     });
     return unsub;
-  }, []);
+  }, [addToast]);
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <p className="text-gray-500">Cargando...</p>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background">
+        <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+        <p className="text-sm font-mono font-bold text-primary mt-4 animate-pulse">Cargando TrackFlow...</p>
       </div>
     );
   }
@@ -86,3 +90,12 @@ export default function App() {
     </Layout>
   );
 }
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
+  );
+}
+

@@ -4,6 +4,7 @@ import { db, firebaseConfig } from '../firebase';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import ConfirmModal from '../components/ConfirmModal';
+import { useToast } from '../context/ToastContext';
 
 const ROLES = [
   { value: 'administrador', label: 'Administrador', desc: 'Acceso completo, puede editar todo' },
@@ -18,8 +19,9 @@ export default function Usuarios({ userDoc }) {
   const [usuarios, setUsuarios] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
-  const [message, setMessage] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+
+  const { addToast } = useToast();
 
   const cargar = async () => {
     setLoading(true);
@@ -29,7 +31,7 @@ export default function Usuarios({ userDoc }) {
       docs.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
       setUsuarios(docs);
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al cargar: ' + err.message });
+      addToast('Error al cargar: ' + err.message, 'error');
     }
     setLoading(false);
   };
@@ -70,19 +72,19 @@ export default function Usuarios({ userDoc }) {
         activo: data.activo,
       });
 
-      setMessage({
-        type: 'success',
-        text: isNew
+      addToast(
+        isNew
           ? `Usuario creado y registrado correctamente. Ya puede iniciar sesión con su correo y contraseña.`
-          : 'Cambios guardados con éxito'
-      });
+          : 'Cambios guardados con éxito',
+        'success'
+      );
       setEditing(null);
       await cargar();
     } catch (err) {
       if (secondaryApp) {
         try { await deleteApp(secondaryApp); } catch (e) {}
       }
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -90,18 +92,15 @@ export default function Usuarios({ userDoc }) {
     try {
       const authInstance = getAuth();
       await sendPasswordResetEmail(authInstance, email);
-      setMessage({
-        type: 'success',
-        text: `Se ha enviado un correo para restablecer la contraseña a ${email}`
-      });
+      addToast(`Se ha enviado un correo para restablecer la contraseña a ${email}`, 'success');
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al enviar correo de restablecimiento: ' + err.message });
+      addToast('Error al enviar correo de restablecimiento: ' + err.message, 'error');
     }
   };
 
   const handleDelete = (usuario) => {
     if (usuario.email === userDoc?.email) {
-      setMessage({ type: 'error', text: 'No puedes eliminar tu propio usuario.' });
+      addToast('No puedes eliminar tu propio usuario.', 'error');
       return;
     }
     setConfirmDelete(usuario);
@@ -113,16 +112,16 @@ export default function Usuarios({ userDoc }) {
     setConfirmDelete(null);
     try {
       await deleteDoc(doc(db, 'usuarios', usuario.id));
-      setMessage({ type: 'success', text: 'Usuario eliminado con éxito de Firestore.' });
+      addToast('Usuario eliminado con éxito de Firestore.', 'success');
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al eliminar: ' + err.message });
+      addToast('Error al eliminar: ' + err.message, 'error');
     }
   };
 
   const handleToggleActivo = async (usuario) => {
     if (usuario.email === userDoc?.email && usuario.activo) {
-      setMessage({ type: 'error', text: 'No puedes desactivar tu propio usuario.' });
+      addToast('No puedes desactivar tu propio usuario.', 'error');
       return;
     }
     try {
@@ -131,7 +130,7 @@ export default function Usuarios({ userDoc }) {
       }, { merge: true });
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -152,19 +151,6 @@ export default function Usuarios({ userDoc }) {
         </button>
       </div>
 
-      {message && (
-        <div className={`px-4 py-3.5 rounded-2xl text-sm font-semibold flex items-center justify-between border ${
-          message.type === 'success' ? 'bg-[#f0f9eb] border-[#c2e7b0] text-[#3c763d]'
-          : 'bg-[#fef0f0] border-[#fde2e2] text-[#93000a]'
-        }`}>
-          <span className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg">{message.type === 'success' ? 'check_circle' : 'error'}</span>
-            {message.text}
-          </span>
-          <button onClick={() => setMessage(null)} className="ml-2 text-current hover:opacity-75 font-bold">×</button>
-        </div>
-      )}
-
       <div className="bg-[#e0e1f9] border border-[#c6c5d2]/40 rounded-2xl px-5 py-4 text-xs text-[#00174c] space-y-1.5 shadow-sm">
         <div className="flex items-center gap-2 font-mono font-bold text-sm text-[#040d53]">
           <span className="material-symbols-outlined text-lg leading-none">info</span>
@@ -180,9 +166,33 @@ export default function Usuarios({ userDoc }) {
       {/* Main Grid View */}
       <div className="bg-white rounded-3xl border border-[#e1e2ec] shadow-sm overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-[#464650] font-semibold animate-pulse flex flex-col items-center justify-center gap-2">
-            <span className="material-symbols-outlined animate-spin text-3xl text-[#040d53]">autorenew</span>
-            Cargando perfiles de usuario...
+          <div className="overflow-x-auto animate-pulse">
+            <table className="w-full text-sm border-collapse">
+              <thead className="bg-[#f8f9fa] text-[#040d53] text-xs uppercase font-mono tracking-wider border-b border-[#e1e2ec]">
+                <tr>
+                  <th className="text-left px-6 py-4 font-bold">Nombre</th>
+                  <th className="text-left px-6 py-4 font-bold">Email</th>
+                  <th className="text-left px-6 py-4 font-bold">Rol</th>
+                  <th className="text-center px-6 py-4 font-bold">Alertas Inmediatas</th>
+                  <th className="text-center px-6 py-4 font-bold">Resumen Diario</th>
+                  <th className="text-center px-6 py-4 font-bold">Estado</th>
+                  <th className="text-right px-6 py-4 font-bold">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#e1e2ec]">
+                {[1, 2, 3].map((n) => (
+                  <tr key={n}>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-32"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-48"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-28"></div></td>
+                    <td className="px-6 py-4 text-center"><div className="h-4 bg-gray-200 rounded w-8 mx-auto"></div></td>
+                    <td className="px-6 py-4 text-center"><div className="h-4 bg-gray-200 rounded w-8 mx-auto"></div></td>
+                    <td className="px-6 py-4"><div className="h-6 bg-gray-200 rounded-full w-14 mx-auto"></div></td>
+                    <td className="px-6 py-4 text-right"><div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : usuarios.length === 0 ? (
           <div className="p-12 text-center text-[#464650] italic">

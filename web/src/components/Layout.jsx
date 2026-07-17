@@ -89,13 +89,18 @@ export default function Layout({ user, userDoc, children }) {
           </button>
 
           {/* Developer attribution & Version */}
-          <div className="pt-3 text-center border-t border-outline-variant/30 flex flex-col items-center gap-0.5">
+          <div className="pt-3 text-center border-t border-outline-variant/30 flex flex-col items-center gap-1">
             <span className="text-[10px] text-on-surface-variant font-mono tracking-wide">
               Desarrollador: <span className="font-bold text-primary">Hernando Sanoja</span>
             </span>
-            <span className="text-[9px] text-on-surface-variant/70 font-mono">
-              Versión V7.0.2.0
-            </span>
+            <div className="flex flex-col items-center gap-0.5">
+              <span className="text-[9px] text-primary/80 font-mono font-bold uppercase tracking-wider bg-primary-container/40 px-2 py-0.5 rounded-full border border-primary/10">
+                Fase 3 Activa
+              </span>
+              <span className="text-[9px] text-on-surface-variant/70 font-mono">
+                V7.3.0 · Inteligencia Predictiva & Simulador
+              </span>
+            </div>
           </div>
         </div>
       </aside>

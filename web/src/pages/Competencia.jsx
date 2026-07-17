@@ -3,6 +3,7 @@ import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, writeBatch, onSnap
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
+import { useToast } from '../context/ToastContext';
 
 const TIPOS = [
   { value: 'propio', label: 'Mi marca' },
@@ -19,12 +20,13 @@ export default function Competencia() {
   const [filtroCadena, setFiltroCadena] = useState('todas');
   const [filtroProducto, setFiltroProducto] = useState('todos');
   const [filtroTipo, setFiltroTipo] = useState('todos');
-  const [message, setMessage] = useState(null);
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [scrapingItems, setScrapingItems] = useState({});
   const [manualPriceItem, setManualPriceItem] = useState(null);
+
+  const { addToast } = useToast();
 
   const fileInputRef = useRef(null);
 
@@ -48,7 +50,7 @@ export default function Competencia() {
       setProductos(pSnap.docs.map(d => ({ id: d.id, ...d.data() })));
       setCadenas(cSnap.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al cargar: ' + err.message });
+      addToast('Error al cargar: ' + err.message, 'error');
     }
     setLoading(false);
   };
@@ -117,11 +119,11 @@ export default function Competencia() {
         concentracion: data.concentracion?.trim() || '',
         tamano: data.tamano?.trim() || '',
       }, { merge: !isNew });
-      setMessage({ type: 'success', text: isNew ? 'URL de competencia creada con éxito' : 'Cambios guardados con éxito' });
+      addToast(isNew ? 'URL de competencia creada con éxito' : 'Cambios guardados con éxito', 'success');
       setEditing(null);
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -135,10 +137,10 @@ export default function Competencia() {
     setConfirmDelete(null);
     try {
       await deleteDoc(doc(db, 'productos_competencia', item.id));
-      setMessage({ type: 'success', text: 'Enlace eliminado del scraper' });
+      addToast('Enlace eliminado del scraper', 'success');
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: 'Error al eliminar: ' + err.message });
+      addToast('Error al eliminar: ' + err.message, 'error');
     }
   };
 
@@ -149,7 +151,7 @@ export default function Competencia() {
       }, { merge: true });
       await cargar();
     } catch (err) {
-      setMessage({ type: 'error', text: err.message });
+      addToast(err.message, 'error');
     }
   };
 
@@ -181,10 +183,7 @@ export default function Competencia() {
       );
       if (res.status === 204) {
         setScrapingItems(prev => ({ ...prev, [item.id]: 'esperando' }));
-        setMessage({
-          type: 'success',
-          text: `El robot se ha lanzado para extraer "${item.marca}" de forma individual en tiempo real. La tabla se actualizará automáticamente en unos instantes.`
-        });
+        addToast(`El robot se ha lanzado para extraer "${item.marca}" de forma individual en tiempo real. La tabla se actualizará automáticamente en unos instantes.`, 'success');
 
         // Suscribirse en tiempo real al documento para detectar cuando cambie
         const unsubscribe = onSnapshot(doc(db, 'productos_competencia', item.id), (snap) => {
@@ -224,7 +223,7 @@ export default function Competencia() {
         delete copy[item.id];
         return copy;
       });
-      setMessage({ type: 'error', text: 'Error al lanzar robot: ' + err.message });
+      addToast('Error al lanzar robot: ' + err.message, 'error');
     }
   };
 
@@ -353,13 +352,13 @@ export default function Competencia() {
 
         if (count > 0) {
           await batch.commit();
-          setMessage({ type: 'success', text: `Carga masiva exitosa: ${count} URLs de competencia importadas.` });
+          addToast(`Carga masiva exitosa: ${count} URLs de competencia importadas.`, 'success');
           await cargar();
         } else {
           throw new Error('No se encontraron filas con campos obligatorios (id_producto_propio, cadena, marca, url).');
         }
       } catch (err) {
-        setMessage({ type: 'error', text: 'Error procesando CSV: ' + err.message });
+        addToast('Error procesando CSV: ' + err.message, 'error');
       }
       setShowCsvModal(false);
     };
@@ -459,18 +458,7 @@ export default function Competencia() {
         </div>
       </div>
 
-      {message && (
-        <div className={`px-4 py-3.5 rounded-2xl text-sm font-semibold flex items-center justify-between border ${
-          message.type === 'success' ? 'bg-[#f0f9eb] border-[#c2e7b0] text-[#3c763d]'
-          : 'bg-error-container text-error border border-error/20'
-        }`}>
-          <span className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-lg">{message.type === 'success' ? 'check_circle' : 'error'}</span>
-            {message.text}
-          </span>
-          <button onClick={() => setMessage(null)} className="ml-2 text-current hover:opacity-75 font-bold">×</button>
-        </div>
-      )}
+
 
       {productoFiltradoSinUrls && (
         <div className="bg-primary-container text-on-primary-container px-5 py-4 rounded-2xl flex items-center justify-between border border-outline-variant/40 shadow-sm">
@@ -581,9 +569,41 @@ export default function Competencia() {
       {/* Main Grid View */}
       <div className="bg-white rounded-3xl border border-outline-variant shadow-sm overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-on-surface-variant font-semibold animate-pulse flex flex-col items-center justify-center gap-2">
-            <span className="material-symbols-outlined animate-spin text-3xl text-primary">autorenew</span>
-            Cargando enlaces vinculados...
+          <div className="overflow-x-auto animate-pulse">
+            <table className="w-full text-sm border-collapse">
+              <thead className="bg-surface-low text-primary text-xs uppercase font-mono tracking-wider border-b border-outline-variant">
+                <tr>
+                  <th className="text-left px-6 py-4 font-bold">Mi Producto Local</th>
+                  <th className="text-left px-6 py-4 font-bold">Cadena Farmacia</th>
+                  <th className="text-left px-6 py-4 font-bold">Variante Competidor</th>
+                  <th className="text-left px-6 py-4 font-bold">Tipo Asociación</th>
+                  <th className="text-right px-6 py-4 font-bold">Último Precio Detectado</th>
+                  <th className="text-center px-6 py-4 font-bold">Status Scrape</th>
+                  <th className="text-center px-6 py-4 font-bold">Scraper Activo</th>
+                  <th className="text-right px-6 py-4 font-bold">Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-outline-variant/30">
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <tr key={n}>
+                    <td className="px-6 py-4">
+                      <div className="h-4 bg-gray-200 rounded w-48 mb-1.5"></div>
+                      <div className="h-3 bg-gray-100 rounded w-24"></div>
+                    </td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-24"></div></td>
+                    <td className="px-6 py-4">
+                      <div className="h-4 bg-gray-200 rounded w-40 mb-1"></div>
+                      <div className="h-3 bg-gray-100 rounded w-60"></div>
+                    </td>
+                    <td className="px-6 py-4"><div className="h-6 bg-gray-200 rounded-full w-20"></div></td>
+                    <td className="px-6 py-4 text-right"><div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div></td>
+                    <td className="px-6 py-4"><div className="h-6 bg-gray-200 rounded-full w-24 mx-auto"></div></td>
+                    <td className="px-6 py-4"><div className="h-6 bg-gray-200 rounded-full w-12 mx-auto"></div></td>
+                    <td className="px-6 py-4 text-right"><div className="h-4 bg-gray-200 rounded w-16 ml-auto"></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : ordenados.length === 0 ? (
           <div className="p-12 text-center text-on-surface-variant italic">
@@ -889,11 +909,11 @@ export default function Competencia() {
                       run_id: runId,
                     });
 
-                    setMessage({ type: 'success', text: `Precio de ${manualPriceItem.marca} actualizado manualmente a Bs ${price.toFixed(2)}.` });
+                    addToast(`Precio de ${manualPriceItem.marca} actualizado manualmente a Bs ${price.toFixed(2)}.`, 'success');
                     setManualPriceItem(null);
                     await cargar();
                   } catch (err) {
-                    alert('Error: ' + err.message);
+                    addToast('Error: ' + err.message, 'error');
                   }
                 }}
                 className="px-5 py-2 text-xs font-bold bg-primary hover:bg-primary/90 text-white rounded-full shadow-sm"
