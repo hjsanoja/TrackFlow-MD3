@@ -88,7 +88,7 @@ export default function Competencia() {
     try {
       const labPart = data.laboratorio?.trim() ? `_${data.laboratorio.trim()}` : '';
       const docId = isNew
-        ? `${data.id_producto_propio}_${data.cadena}_${data.marca}${labPart}`.replace(/\s+/g, '_')
+        ? `${data.id_producto_propio}_${data.cadena}_${data.marca}${labPart}`.replace(/[\s/\\]+/g, '_')
         : editing.id;
       
       if (isNew && items.some(it => it.id === docId)) {
@@ -333,7 +333,7 @@ export default function Competencia() {
           if (!id_producto || !cadena || !marca || !url) continue;
 
           const labPart = laboratorio ? `_${laboratorio}` : '';
-          const docId = `${id_producto}_${cadena}_${marca}${labPart}`.replace(/\s+/g, '_');
+          const docId = `${id_producto}_${cadena}_${marca}${labPart}`.replace(/[\s/\\]+/g, '_');
           const compRef = doc(db, 'productos_competencia', docId);
 
           batch.set(compRef, {

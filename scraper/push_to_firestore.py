@@ -54,7 +54,7 @@ def main():
             parts = [r["id_producto_propio"], r["cadena"], r["marca"]]
             if laboratorio:
                 parts.append(laboratorio)
-            prod_comp_id = "_".join(parts).replace(" ", "_")
+            prod_comp_id = "_".join(parts).replace(" ", "_").replace("/", "_").replace("\\", "_")
 
         # Considerar error si viene campo 'error' explícito o si no tiene precio válido (es None o <= 0.1)
         es_error = False

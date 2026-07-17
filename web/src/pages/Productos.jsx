@@ -117,7 +117,7 @@ export default function Productos() {
       for (const chainName of Object.keys(activeUrls)) {
         const urlData = activeUrls[chainName];
         if (urlData.url.trim()) {
-          const docId = urlData.id || `${id}_${chainName}_${urlData.marca || 'Generico'}`.replace(/\s+/g, '_');
+          const docId = urlData.id || `${id}_${chainName}_${urlData.marca || 'Generico'}`.replace(/[\s/\\]+/g, '_');
           const compRef = doc(db, 'productos_competencia', docId);
           batch.set(compRef, {
             id_producto_propio: id,
@@ -263,6 +263,21 @@ export default function Productos() {
     const lines = text.split(/\r?\n/);
     if (lines.length === 0) return [];
     
+    // Detect delimiter
+    const firstLine = lines[0];
+    let delimiter = ',';
+    if (firstLine.includes('\t')) {
+      delimiter = '\t';
+    } else if (firstLine.includes(';') && !firstLine.includes(',')) {
+      delimiter = ';';
+    } else if (firstLine.includes(';')) {
+      const commaCount = (firstLine.match(/,/g) || []).length;
+      const semiCount = (firstLine.match(/;/g) || []).length;
+      if (semiCount > commaCount) {
+        delimiter = ';';
+      }
+    }
+
     const splitLine = (line) => {
       const result = [];
       let current = '';
@@ -271,7 +286,7 @@ export default function Productos() {
         const char = line[i];
         if (char === '"') {
           inQuotes = !inQuotes;
-        } else if (char === ',' && !inQuotes) {
+        } else if (char === delimiter && !inQuotes) {
           result.push(current.trim());
           current = '';
         } else {
