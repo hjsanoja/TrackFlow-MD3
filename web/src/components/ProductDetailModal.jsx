@@ -686,9 +686,8 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                         tick={{ fontSize: 11, fill: '#464650' }} 
                       />
                       <YAxis tick={{ fontSize: 11, fill: '#464650' }} />
-                      <Tooltip content={(props) => (
+                      <Tooltip content={
                         <CustomTooltip 
-                          {...props} 
                           propios={chartViewType === 'individual' 
                             ? Array.from(chartData.individual.propios) 
                             : (propioItem ? [propioItem.cadena] : [])
@@ -696,7 +695,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                           labMap={chartViewType === 'individual' ? Object.fromEntries(labMap) : {}} 
                           currency={modalCurrency} 
                         />
-                      )} />
+                      } />
                       <Legend wrapperStyle={{ fontSize: 11, marginTop: 10 }} />
                       
                       {chartViewType === 'individual' ? (

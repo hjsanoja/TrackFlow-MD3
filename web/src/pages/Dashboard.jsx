@@ -85,7 +85,8 @@ export default function Dashboard({ user, userDoc }) {
         .sort((a, b) => a.rawDate - b.rawDate)
         .slice(-10);
 
-      setBcvHistorico(uniqueDaysRates);
+      // Strip rawDate object to ensure we only store 100% simple JSON-serializable primitives in state
+      setBcvHistorico(uniqueDaysRates.map(({ dayKey, fecha, valor }) => ({ dayKey, fecha, valor })));
 
     } catch (err) {
       console.error('Error cargando panel:', err?.message || String(err));
@@ -258,7 +259,9 @@ export default function Dashboard({ user, userDoc }) {
         // Check if there are any price changes in the latest run
         const hasChangesToday = chainPrices.some(cp => Math.abs(cp.changePercent) > 0.05);
 
-        const competitorPricesUsd = chainPrices.map(x => x.priceUsd);
+        const competitorPricesUsd = chainPrices
+          .filter(x => x.tipo !== 'propio')
+          .map(x => x.priceUsd);
 
         const avgCompUsd = competitorPricesUsd.length > 0 
           ? competitorPricesUsd.reduce((a, b) => a + b, 0) / competitorPricesUsd.length 
