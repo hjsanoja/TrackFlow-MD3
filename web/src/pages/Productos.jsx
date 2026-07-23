@@ -1,10 +1,11 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import {
-  collection, getDocs, doc, setDoc, deleteDoc, writeBatch
+  collection, doc, setDoc, deleteDoc, writeBatch
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
+import { useData } from '../context/DataContext';
 
 const CATEGORIAS = [
   'Analgésicos',
@@ -19,41 +20,26 @@ const CATEGORIAS = [
 ];
 
 export default function Productos() {
-  const [productos, setProductos] = useState([]);
-  const [competencia, setCompetencia] = useState([]);
-  const [cadenas, setCadenas] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    productos,
+    productosCompetencia: competencia,
+    cadenas,
+    loadingInitial: loading,
+    refreshData: cargar
+  } = useData();
+
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState('');
   const [filtroActivo, setFiltroActivo] = useState('todos');
   const [filtroUrls, setFiltroUrls] = useState('todos'); // todos | con_urls | sin_urls
+  const [filtroTipo, setFiltroTipo] = useState('todos'); // todos | generico | marca
+  const [filtroUn, setFiltroUn] = useState('todos'); // todos | lasante | pharmetique | otc
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   const { addToast } = useToast();
 
   const fileInputRef = useRef(null);
-
-  const cargar = async () => {
-    setLoading(true);
-    try {
-      const [pSnap, pcSnap, cSnap] = await Promise.all([
-        getDocs(collection(db, 'productos')),
-        getDocs(collection(db, 'productos_competencia')),
-        getDocs(collection(db, 'cadenas')),
-      ]);
-      const docs = pSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      docs.sort((a, b) => (a.id_interno || '').localeCompare(b.id_interno || ''));
-      setProductos(docs);
-      setCompetencia(pcSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setCadenas(cSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-    } catch (err) {
-      addToast('Error al cargar: ' + err.message, 'error');
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => { cargar(); }, []);
 
   // Cuenta URLs activas por producto
   const urlsPorProducto = useMemo(() => {
@@ -71,6 +57,14 @@ export default function Productos() {
     return productos.filter(p => {
       if (filtroActivo === 'activos' && !p.activo) return false;
       if (filtroActivo === 'inactivos' && p.activo) return false;
+
+      const pTipo = (p.market_type || 'GENERICO').toUpperCase();
+      if (filtroTipo === 'generico' && pTipo !== 'GENERICO') return false;
+      if (filtroTipo === 'marca' && pTipo !== 'MARCA') return false;
+
+      const pUn = (p.unidad_negocio || 'La Sante').toLowerCase().replace(/\s/g, '');
+      if (filtroUn !== 'todos' && pUn !== filtroUn) return false;
+
       const links = urlsPorProducto.get(p.id_interno) || [];
       if (filtroUrls === 'con_urls' && links.length === 0) return false;
       if (filtroUrls === 'sin_urls' && links.length > 0) return false;
@@ -83,7 +77,7 @@ export default function Productos() {
         (p.id_interno || '').toLowerCase().includes(term)
       );
     });
-  }, [productos, search, filtroActivo, filtroUrls, urlsPorProducto]);
+  }, [productos, search, filtroActivo, filtroUrls, filtroTipo, filtroUn, urlsPorProducto]);
 
   const huerfanos = useMemo(() => {
     return productos.filter(p => p.activo && (urlsPorProducto.get(p.id_interno) || []).length === 0).length;
@@ -106,6 +100,8 @@ export default function Productos() {
         presentacion: `${data.concentracion || ''} ${data.tamano || ''}`.trim() || (data.presentacion || ''),
         laboratorio: (data.laboratorio || '').trim(),
         categoria: data.categoria || 'Otros',
+        market_type: data.market_type || 'GENERICO',
+        unidad_negocio: data.unidad_negocio || 'La Sante',
         activo: data.activo ?? true,
       };
 
@@ -209,6 +205,22 @@ export default function Productos() {
           const tamano = (row.tamano || row.presentacion || row.Tamano || '').trim();
           const laboratorio = (row.laboratorio || row.Laboratorio || '').trim();
           const categoria = (row.categoria || row.Categoria || 'Otros').trim();
+          let market_type = (row.market_type || row.tipo_mercado || row.tipo || row.Market_Type || 'GENERICO').trim().toUpperCase();
+          if (market_type.includes('MARCA')) {
+            market_type = 'MARCA';
+          } else {
+            market_type = 'GENERICO';
+          }
+
+          let unRaw = (row.unidad_negocio || row.unidad || row.un || row.Unidad_Negocio || row.UN || 'La Sante').trim().toUpperCase();
+          let unidad_negocio = 'La Sante';
+          if (unRaw.includes('PHARMETIQUE') || unRaw === 'PH') {
+            unidad_negocio = 'Pharmetique';
+          } else if (unRaw.includes('OTC')) {
+            unidad_negocio = 'OTC';
+          } else if (unRaw.includes('SANTE') || unRaw.includes('SANTÉ')) {
+            unidad_negocio = 'La Sante';
+          }
 
           const cleanProd = {
             id_interno: id,
@@ -219,6 +231,8 @@ export default function Productos() {
             presentacion: `${concentracion} ${tamano}`.trim() || tamano,
             laboratorio,
             categoria: CATEGORIAS.includes(categoria) ? categoria : 'Otros',
+            market_type,
+            unidad_negocio,
             activo: true,
           };
 
@@ -324,19 +338,65 @@ export default function Productos() {
     return 'P' + String(max + 1).padStart(3, '0');
   };
 
-  const downloadExampleCsv = () => {
-    const headers = 'id_interno,nombre,principio_activo,concentracion,tamano,laboratorio,categoria,url_farmatodo,url_locatel\n';
-    const row1 = 'P001,Atamel,Acetaminofén,500 mg,10 tabletas,La Santé,Analgésicos,https://www.farmatodo.com.ve/producto/atamel-500mg,https://www.locatel.com.ve/atamel\n';
-    const row2 = 'P002,Calox,Ibuprofeno,400 mg,20 capsulas,Calox,Analgésicos,,\n';
-    const blob = new Blob([headers + row1 + row2], { type: 'text/csv;charset=utf-8;' });
+  const downloadCsvPlantilla = () => {
+    // Determine chains columns from active cadenas or defaults
+    const chainList = cadenas.length > 0 
+      ? cadenas.map(c => c.nombre.trim())
+      : ['Farmatodo', 'Locatel', 'Redvital', 'Meditotal'];
+
+    const chainHeaderCols = chainList.map(c => `url_${c.toLowerCase().replace(/\s+/g, '_')}`);
+    const headers = ['id_interno', 'nombre', 'principio_activo', 'concentracion', 'tamano', 'laboratorio', 'categoria', 'market_type', 'unidad_negocio', ...chainHeaderCols].join(',') + '\n';
+
+    let content = '\ufeff' + headers; // UTF-8 BOM for Excel compatibility
+
+    if (productos.length > 0) {
+      // Export current database products with existing data and chain URLs
+      productos.forEach(p => {
+        const pLinks = competencia.filter(c => c.id_producto_propio === p.id_interno && c.activo);
+        
+        const chainUrls = chainList.map(cName => {
+          const found = pLinks.find(c => (c.cadena || '').toLowerCase().trim() === cName.toLowerCase().trim());
+          return found ? found.url : '';
+        });
+
+        const row = [
+          p.id_interno || '',
+          p.nombre || '',
+          p.principio_activo || '',
+          p.concentracion || '',
+          p.tamano || '',
+          p.laboratorio || '',
+          p.categoria || '',
+          p.market_type || 'GENERICO',
+          p.unidad_negocio || 'La Sante',
+          ...chainUrls
+        ].map(val => {
+          const str = String(val || '');
+          if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+            return `"${str.replace(/"/g, '""')}"`;
+          }
+          return str;
+        }).join(',');
+
+        content += row + '\n';
+      });
+    } else {
+      // Fallback example rows if database is empty
+      const row1 = 'P001,Atamel,Acetaminofén,500 mg,10 tabletas,La Santé,Analgésicos,MARCA,La Sante,https://www.farmatodo.com.ve/producto/atamel-500mg,https://www.locatel.com.ve/atamel\n';
+      const row2 = 'P002,Calox,Ibuprofeno,400 mg,20 capsulas,Calox,Analgésicos,GENERICO,OTC,,\n';
+      content += row1 + row2;
+    }
+
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', 'plantilla_productos.csv');
+    link.setAttribute('download', `Plantilla_Catalogo_Productos_${new Date().toISOString().slice(0, 10)}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    addToast(productos.length > 0 ? `Plantilla con tus ${productos.length} productos cargados descargada con éxito.` : 'Plantilla de ejemplo descargada.', 'success');
   };
 
   return (
@@ -405,6 +465,26 @@ export default function Productos() {
             <button onClick={() => setFiltroUrls('sin_urls')}
               className={`px-4 py-1.5 rounded-full transition-all ${filtroUrls === 'sin_urls' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>SIN ENLACES</button>
           </div>
+
+          <div className="flex bg-surface-low rounded-full p-1 text-xs font-mono font-bold border border-outline-variant">
+            <button onClick={() => setFiltroTipo('todos')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroTipo === 'todos' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>TODOS TIPO</button>
+            <button onClick={() => setFiltroTipo('generico')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroTipo === 'generico' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>GENÉRICOS</button>
+            <button onClick={() => setFiltroTipo('marca')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroTipo === 'marca' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>MARCA</button>
+          </div>
+
+          <div className="flex bg-surface-low rounded-full p-1 text-xs font-mono font-bold border border-outline-variant">
+            <button onClick={() => setFiltroUn('todos')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroUn === 'todos' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>TODAS UN</button>
+            <button onClick={() => setFiltroUn('lasante')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroUn === 'lasante' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>LA SANTÉ</button>
+            <button onClick={() => setFiltroUn('pharmetique')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroUn === 'pharmetique' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>PHARMETIQUE</button>
+            <button onClick={() => setFiltroUn('otc')}
+              className={`px-4 py-1.5 rounded-full transition-all ${filtroUn === 'otc' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>OTC</button>
+          </div>
         </div>
       </div>
 
@@ -418,6 +498,7 @@ export default function Productos() {
                   <th className="text-left px-6 py-4 font-bold">ID</th>
                   <th className="text-left px-6 py-4 font-bold">Nombre / Molécula</th>
                   <th className="text-left px-6 py-4 font-bold">Concentración / Tamaño</th>
+                  <th className="text-left px-6 py-4 font-bold">Tipo</th>
                   <th className="text-left px-6 py-4 font-bold">Laboratorio</th>
                   <th className="text-left px-6 py-4 font-bold">Categoría</th>
                   <th className="text-center px-6 py-4 font-bold">Enlaces Activos</th>
@@ -434,6 +515,7 @@ export default function Productos() {
                       <div className="h-3 bg-gray-100 rounded w-32"></div>
                     </td>
                     <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-24"></div></td>
+                    <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-12"></div></td>
                     <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-28"></div></td>
                     <td className="px-6 py-4"><div className="h-4 bg-gray-200 rounded w-24"></div></td>
                     <td className="px-6 py-4 text-center"><div className="h-4 bg-gray-200 rounded w-8 mx-auto"></div></td>
@@ -458,6 +540,8 @@ export default function Productos() {
                   <th className="text-left px-6 py-4 font-bold">ID</th>
                   <th className="text-left px-6 py-4 font-bold">Nombre / Molécula</th>
                   <th className="text-left px-6 py-4 font-bold">Concentración / Tamaño</th>
+                  <th className="text-left px-6 py-4 font-bold">Tipo</th>
+                  <th className="text-left px-6 py-4 font-bold">UN</th>
                   <th className="text-left px-6 py-4 font-bold">Laboratorio</th>
                   <th className="text-left px-6 py-4 font-bold">Categoría</th>
                   <th className="text-center px-6 py-4 font-bold">Enlaces Activos</th>
@@ -479,6 +563,26 @@ export default function Productos() {
                       <td className="px-6 py-4">
                         <div className="text-on-surface font-semibold">{p.concentracion || '—'}</div>
                         <div className="text-xs text-on-surface-variant font-mono mt-0.5">{p.tamano || '—'}</div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2.5 py-0.5 text-[10px] rounded font-mono font-bold tracking-wider ${
+                          (p.market_type || 'GENERICO').toUpperCase() === 'MARCA'
+                            ? 'bg-purple-100 text-purple-800 border border-purple-200'
+                            : 'bg-green-100 text-green-800 border border-green-200'
+                        }`}>
+                          {p.market_type || 'GENERICO'}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`px-2 py-1 rounded text-xs font-mono font-bold border ${
+                          (p.unidad_negocio || 'La Sante') === 'OTC'
+                            ? 'bg-amber-100 text-amber-800 border-amber-200'
+                            : (p.unidad_negocio || 'La Sante') === 'Pharmetique'
+                            ? 'bg-blue-100 text-blue-800 border-blue-200'
+                            : 'bg-teal-100 text-teal-800 border-teal-200'
+                        }`}>
+                          {p.unidad_negocio || 'La Sante'}
+                        </span>
                       </td>
                       <td className="px-6 py-4 text-on-surface">{p.laboratorio || '—'}</td>
                       <td className="px-6 py-4">
@@ -581,10 +685,10 @@ export default function Productos() {
                 <div>url_farmatodo, url_locatel <span className="text-on-surface-variant font-sans font-medium">(Enlaces opcionales)</span></div>
               </div>
               <div className="flex justify-between items-center pt-2">
-                <button type="button" onClick={downloadExampleCsv}
+                <button type="button" onClick={downloadCsvPlantilla}
                   className="text-xs text-primary font-bold hover:underline inline-flex items-center gap-1">
                   <span className="material-symbols-outlined text-sm">download</span>
-                  Descargar Plantilla Ejemplo CSV
+                  Descargar Plantilla / Catálogo Actual (CSV)
                 </button>
               </div>
 
@@ -621,6 +725,8 @@ function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual
     tamano: producto?.tamano || '',
     presentacion: producto?.presentacion || '',
     categoria: producto?.categoria || '',
+    market_type: producto?.market_type || 'GENERICO',
+    unidad_negocio: producto?.unidad_negocio || 'La Sante',
     activo: producto?.activo ?? true,
   });
 
@@ -723,6 +829,23 @@ function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual
                 className="w-full px-4 py-2 border border-outline-variant rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary bg-white text-sm">
                 <option value="">— Selecciona —</option>
                 {CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </Field>
+
+            <Field label="Market Type (Tipo)">
+              <select value={form.market_type} onChange={e => handleChange('market_type', e.target.value)}
+                className="w-full px-4 py-2 border border-outline-variant rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary bg-white text-sm font-bold text-primary">
+                <option value="GENERICO">GENÉRICO</option>
+                <option value="MARCA">MARCA</option>
+              </select>
+            </Field>
+
+            <Field label="Unidad de Negocio (UN)">
+              <select value={form.unidad_negocio} onChange={e => handleChange('unidad_negocio', e.target.value)}
+                className="w-full px-4 py-2 border border-outline-variant rounded-xl focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary bg-white text-sm font-bold text-secondary">
+                <option value="La Sante">La Santé</option>
+                <option value="Pharmetique">Pharmetique</option>
+                <option value="OTC">OTC</option>
               </select>
             </Field>
           </div>

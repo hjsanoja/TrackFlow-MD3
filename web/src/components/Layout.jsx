@@ -8,6 +8,8 @@ export default function Layout({ user, userDoc, children }) {
 
   const navItems = [
     { to: '/', label: 'Dashboard', icon: 'dashboard', adminOnly: false },
+    { to: '/simulador', label: 'Análisis', icon: 'insights', adminOnly: false },
+    { to: '/hallazgos', label: 'Hallazgos', icon: 'troubleshoot', adminOnly: false },
     { to: '/productos', label: 'Productos', icon: 'medication', adminOnly: true },
     { to: '/competencia', label: 'Competencia', icon: 'link', adminOnly: true },
     { to: '/cadenas', label: 'Cadenas', icon: 'storefront', adminOnly: true },

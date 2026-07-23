@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db, firebaseConfig } from '../firebase';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, signOut, sendPasswordResetEmail } from 'firebase/auth';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
+import { useData } from '../context/DataContext';
 
 const ROLES = [
   { value: 'administrador', label: 'Administrador', desc: 'Acceso completo, puede editar todo' },
@@ -16,27 +17,12 @@ function emailToDocId(email) {
 }
 
 export default function Usuarios({ userDoc }) {
-  const [usuarios, setUsuarios] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { usuarios, loadingInitial: loading, refreshUsuarios: cargar } = useData();
+
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   const { addToast } = useToast();
-
-  const cargar = async () => {
-    setLoading(true);
-    try {
-      const snap = await getDocs(collection(db, 'usuarios'));
-      const docs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      docs.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
-      setUsuarios(docs);
-    } catch (err) {
-      addToast('Error al cargar: ' + err.message, 'error');
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => { cargar(); }, []);
 
   const handleSave = async (data, isNew) => {
     let secondaryApp = null;

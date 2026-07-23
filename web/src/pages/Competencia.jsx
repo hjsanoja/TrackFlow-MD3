@@ -1,9 +1,10 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, writeBatch, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc, getDoc, writeBatch, onSnapshot } from 'firebase/firestore';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
+import { useData } from '../context/DataContext';
 
 const TIPOS = [
   { value: 'propio', label: 'Mi marca' },
@@ -11,10 +12,14 @@ const TIPOS = [
 ];
 
 export default function Competencia() {
-  const [items, setItems] = useState([]);
-  const [productos, setProductos] = useState([]);
-  const [cadenas, setCadenas] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    productosCompetencia: items,
+    productos,
+    cadenas,
+    loadingInitial: loading,
+    refreshData: cargar
+  } = useData();
+
   const [editing, setEditing] = useState(null);
   const [search, setSearch] = useState('');
   const [filtroCadena, setFiltroCadena] = useState('todas');
@@ -37,25 +42,6 @@ export default function Competencia() {
       setFiltroProducto(productoParam);
     }
   }, [searchParams]);
-
-  const cargar = async () => {
-    setLoading(true);
-    try {
-      const [pcSnap, pSnap, cSnap] = await Promise.all([
-        getDocs(collection(db, 'productos_competencia')),
-        getDocs(collection(db, 'productos')),
-        getDocs(collection(db, 'cadenas')),
-      ]);
-      setItems(pcSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setProductos(pSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-      setCadenas(cSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-    } catch (err) {
-      addToast('Error al cargar: ' + err.message, 'error');
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => { cargar(); }, []);
 
   const filtrados = useMemo(() => {
     const term = search.toLowerCase().trim();

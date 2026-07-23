@@ -5,12 +5,15 @@ import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Simulador from './pages/Simulador';
+import Hallazgos from './pages/Hallazgos';
 import Productos from './pages/Productos';
 import Competencia from './pages/Competencia';
 import Cadenas from './pages/Cadenas';
 import Usuarios from './pages/Usuarios';
 import Layout from './components/Layout';
 import { ToastProvider, useToast } from './context/ToastContext';
+import { DataProvider } from './context/DataContext';
 
 function emailToDocId(email) {
   return email.toLowerCase().replace('@', '_at_').replaceAll('.', '_');
@@ -77,17 +80,21 @@ function AppContent() {
   const isAdmin = userDoc?.rol === 'administrador';
 
   return (
-    <Layout user={user} userDoc={userDoc}>
-      <Routes>
-        <Route path="/" element={<Dashboard user={user} userDoc={userDoc} />} />
-        <Route path="/productos" element={isAdmin ? <Productos /> : <Navigate to="/" />} />
-        <Route path="/competencia" element={isAdmin ? <Competencia /> : <Navigate to="/" />} />
-        <Route path="/cadenas" element={isAdmin ? <Cadenas /> : <Navigate to="/" />} />
-        <Route path="/usuarios" element={isAdmin ? <Usuarios userDoc={userDoc} /> : <Navigate to="/" />} />
-        <Route path="/login" element={<Navigate to="/" />} />
-        <Route path="*" element={<Navigate to="/" />} />
-      </Routes>
-    </Layout>
+    <DataProvider user={user}>
+      <Layout user={user} userDoc={userDoc}>
+        <Routes>
+          <Route path="/" element={<Dashboard user={user} userDoc={userDoc} />} />
+          <Route path="/simulador" element={<Simulador user={user} userDoc={userDoc} />} />
+          <Route path="/hallazgos" element={<Hallazgos user={user} userDoc={userDoc} />} />
+          <Route path="/productos" element={isAdmin ? <Productos /> : <Navigate to="/" />} />
+          <Route path="/competencia" element={isAdmin ? <Competencia /> : <Navigate to="/" />} />
+          <Route path="/cadenas" element={isAdmin ? <Cadenas /> : <Navigate to="/" />} />
+          <Route path="/usuarios" element={isAdmin ? <Usuarios userDoc={userDoc} /> : <Navigate to="/" />} />
+          <Route path="/login" element={<Navigate to="/" />} />
+          <Route path="*" element={<Navigate to="/" />} />
+        </Routes>
+      </Layout>
+    </DataProvider>
   );
 }
 

@@ -1,8 +1,9 @@
 import { useEffect, useState, useMemo } from 'react';
-import { collection, getDocs, doc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
+import { useData } from '../context/DataContext';
 
 // Scrapers disponibles en el código actual
 const SCRAPERS_DISPONIBLES = [
@@ -18,32 +19,17 @@ const SCRAPERS_DISPONIBLES = [
 const SCRAPERS_IMPLEMENTADOS = new Set(['farmatodo', 'locatel', 'farmaciasaas', 'saas']);
 
 export default function Cadenas() {
-  const [cadenas, setCadenas] = useState([]);
-  const [competencia, setCompetencia] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    cadenas,
+    productosCompetencia: competencia,
+    loadingInitial: loading,
+    refreshData: cargar
+  } = useData();
+
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
   const { addToast } = useToast();
-
-  const cargar = async () => {
-    setLoading(true);
-    try {
-      const [cSnap, pcSnap] = await Promise.all([
-        getDocs(collection(db, 'cadenas')),
-        getDocs(collection(db, 'productos_competencia')),
-      ]);
-      const docs = cSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-      docs.sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
-      setCadenas(docs);
-      setCompetencia(pcSnap.docs.map(d => ({ id: d.id, ...d.data() })));
-    } catch (err) {
-      addToast('Error al cargar: ' + err.message, 'error');
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => { cargar(); }, []);
 
   // Cuenta URLs activas por cadena
   const urlsPorCadena = useMemo(() => {
