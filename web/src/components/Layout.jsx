@@ -1,8 +1,10 @@
 import { NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
+import { useData } from '../context/DataContext';
 
 export default function Layout({ user, userDoc, children }) {
+  const { isRefreshing, refreshData } = useData();
   const isAdmin = userDoc?.rol === 'administrador';
   const handleLogout = () => signOut(auth);
 
@@ -109,6 +111,34 @@ export default function Layout({ user, userDoc, children }) {
 
       {/* Main content */}
       <main className="flex-1 overflow-x-auto min-h-screen flex flex-col">
+        {/* Top Header Bar */}
+        <header className="px-8 py-3 bg-white/80 backdrop-blur border-b border-outline-variant/50 flex items-center justify-between sticky top-0 z-10">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+            <span className="text-xs font-mono font-semibold text-on-surface-variant">
+              Conexión Firestore Caché Activa
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {isRefreshing ? (
+              <span className="inline-flex items-center gap-1.5 text-xs font-mono font-bold text-primary bg-primary/10 px-3 py-1 rounded-full border border-primary/20 animate-pulse">
+                <span className="material-symbols-outlined text-sm animate-spin">sync</span>
+                Actualizando datos en segundo plano...
+              </span>
+            ) : (
+              <button
+                onClick={() => refreshData()}
+                className="inline-flex items-center gap-1.5 text-xs font-mono font-medium text-on-surface-variant hover:text-primary transition-colors px-2.5 py-1 rounded-full hover:bg-surface-low border border-transparent hover:border-outline-variant"
+                title="Actualizar datos manualmente"
+              >
+                <span className="material-symbols-outlined text-sm">refresh</span>
+                Actualizar
+              </button>
+            )}
+          </div>
+        </header>
+
         <div className="flex-1 p-8 max-w-[1440px] w-full mx-auto">
           {children}
         </div>

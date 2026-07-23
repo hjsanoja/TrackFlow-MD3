@@ -1,0 +1,8 @@
+node_modules
+dist
+.vite
+web/node_modules
+web/dist
+web/.vite
+*.log
+.DS_Store

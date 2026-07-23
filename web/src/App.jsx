@@ -12,6 +12,7 @@ import Competencia from './pages/Competencia';
 import Cadenas from './pages/Cadenas';
 import Usuarios from './pages/Usuarios';
 import Layout from './components/Layout';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ToastProvider, useToast } from './context/ToastContext';
 import { DataProvider } from './context/DataContext';
 
@@ -100,9 +101,11 @@ function AppContent() {
 
 export default function App() {
   return (
-    <ToastProvider>
-      <AppContent />
-    </ToastProvider>
+    <ErrorBoundary>
+      <ToastProvider>
+        <AppContent />
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
 

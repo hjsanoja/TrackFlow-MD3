@@ -13,11 +13,14 @@ export function DataProvider({ children, user }) {
   const [ultimaCorrida, setUltimaCorrida] = useState(null);
   const [usuarios, setUsuarios] = useState([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoadedOnce, setIsLoadedOnce] = useState(false);
 
   const cargarTodo = useCallback(async (showSilently = false) => {
     if (!showSilently && !isLoadedOnce) {
       setLoadingInitial(true);
+    } else {
+      setIsRefreshing(true);
     }
     try {
       const [pSnap, pcSnap, cSnap, hSnap, rSnap, bSnap, uSnap] = await Promise.all([
@@ -87,6 +90,7 @@ export function DataProvider({ children, user }) {
       console.error('Error cargando datos globales:', err);
     } finally {
       setLoadingInitial(false);
+      setIsRefreshing(false);
     }
   }, [isLoadedOnce]);
 
@@ -147,6 +151,7 @@ export function DataProvider({ children, user }) {
     ultimaCorrida,
     usuarios,
     loadingInitial,
+    isRefreshing,
     isLoadedOnce,
     refreshData: cargarTodo,
     refreshProductos,
@@ -162,6 +167,7 @@ export function DataProvider({ children, user }) {
     ultimaCorrida,
     usuarios,
     loadingInitial,
+    isRefreshing,
     isLoadedOnce,
     cargarTodo,
     refreshProductos,

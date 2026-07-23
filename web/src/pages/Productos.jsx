@@ -6,6 +6,7 @@ import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
+import { exportToCSV } from '../utils/exportUtils';
 
 const CATEGORIAS = [
   'Analgésicos',
@@ -79,9 +80,18 @@ export default function Productos() {
     });
   }, [productos, search, filtroActivo, filtroUrls, filtroTipo, filtroUn, urlsPorProducto]);
 
-  const huerfanos = useMemo(() => {
-    return productos.filter(p => p.activo && (urlsPorProducto.get(p.id_interno) || []).length === 0).length;
-  }, [productos, urlsPorProducto]);
+  const [paginaActual, setPaginaActual] = useState(1);
+  const itemsPorPagina = 20;
+
+  useEffect(() => {
+    setPaginaActual(1);
+  }, [search, filtroActivo, filtroUrls, filtroTipo, filtroUn]);
+
+  const totalPaginas = Math.max(1, Math.ceil(filtrados.length / itemsPorPagina));
+  const productosPaginados = useMemo(() => {
+    const inicio = (paginaActual - 1) * itemsPorPagina;
+    return filtrados.slice(inicio, inicio + itemsPorPagina);
+  }, [filtrados, paginaActual]);
 
   const handleSave = async (data, isNew, activeUrls) => {
     try {
@@ -399,6 +409,33 @@ export default function Productos() {
     addToast(productos.length > 0 ? `Plantilla con tus ${productos.length} productos cargados descargada con éxito.` : 'Plantilla de ejemplo descargada.', 'success');
   };
 
+  const handleExportarCatalogo = () => {
+    const headers = [
+      { label: 'ID Interno', key: 'id_interno' },
+      { label: 'Nombre', key: 'nombre' },
+      { label: 'Principio Activo', key: 'principio_activo' },
+      { label: 'Concentración', key: 'concentracion' },
+      { label: 'Presentación/Tamaño', key: 'tamano_empaque' },
+      { label: 'Tipo', key: 'market_type' },
+      { label: 'Unidad de Negocio', key: 'unidad_negocio' },
+      { label: 'Laboratorio', key: 'laboratorio' },
+      { label: 'Categoría', key: 'categoria' },
+      { label: 'Estado', key: 'estado_str' }
+    ];
+
+    const dataRows = filtrados.map(p => ({
+      ...p,
+      market_type: p.market_type || 'GENERICO',
+      unidad_negocio: p.unidad_negocio || 'Sin UN',
+      laboratorio: p.laboratorio || '—',
+      categoria: p.categoria || 'Sin Categ',
+      estado_str: p.activo ? 'ACTIVO' : 'INACTIVO'
+    }));
+
+    exportToCSV('Catalogo_Productos_Farmaceuticos', headers, dataRows);
+    addToast(`Exportados ${dataRows.length} productos a CSV.`, 'success');
+  };
+
   return (
     <div className="space-y-6">
       {/* Editorial Title Header */}
@@ -409,7 +446,13 @@ export default function Productos() {
             Gestiona el catálogo de medicamentos registrados y asocia sus enlaces de competencia.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={handleExportarCatalogo}
+            className="text-xs px-4 py-2.5 bg-white border border-outline-variant hover:bg-surface-low font-bold text-primary rounded-full transition-all flex items-center gap-1.5 shadow-sm"
+            title="Exportar vista actual a archivo CSV">
+            <span className="material-symbols-outlined text-base">download</span>
+            <span>Exportar CSV</span>
+          </button>
           <button onClick={() => setShowCsvModal(true)}
             className="text-xs px-4 py-2.5 bg-white border border-outline-variant hover:bg-surface-low font-bold text-primary rounded-full transition-all flex items-center gap-1.5 shadow-sm">
             <span className="material-symbols-outlined text-base">upload_file</span>
@@ -550,7 +593,7 @@ export default function Productos() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline-variant/30">
-                {filtrados.map(p => {
+                {productosPaginados.map(p => {
                   const links = urlsPorProducto.get(p.id_interno) || [];
                   const count = links.length;
                   return (
@@ -625,6 +668,38 @@ export default function Productos() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination Footer */}
+        {filtrados.length > 0 && (
+          <div className="px-6 py-4 bg-surface-low border-t border-outline-variant flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="text-xs text-on-surface-variant font-mono">
+              Mostrando <span className="font-bold text-primary">{Math.min(filtrados.length, (paginaActual - 1) * itemsPorPagina + 1)}</span> - <span className="font-bold text-primary">{Math.min(filtrados.length, paginaActual * itemsPorPagina)}</span> de <span className="font-bold text-primary">{filtrados.length}</span> productos
+            </div>
+            {totalPaginas > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPaginaActual(p => Math.max(1, p - 1))}
+                  disabled={paginaActual === 1}
+                  className="px-3 py-1.5 rounded-lg border border-outline-variant bg-white text-xs font-bold text-primary disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-all flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-sm">chevron_left</span>
+                  Anterior
+                </button>
+                <span className="text-xs font-mono font-bold px-3 py-1 bg-white border border-outline-variant rounded-lg text-primary">
+                  {paginaActual} / {totalPaginas}
+                </span>
+                <button
+                  onClick={() => setPaginaActual(p => Math.min(totalPaginas, p + 1))}
+                  disabled={paginaActual === totalPaginas}
+                  className="px-3 py-1.5 rounded-lg border border-outline-variant bg-white text-xs font-bold text-primary disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-all flex items-center gap-1"
+                >
+                  Siguiente
+                  <span className="material-symbols-outlined text-sm">chevron_right</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

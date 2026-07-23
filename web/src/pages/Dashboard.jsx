@@ -756,6 +756,25 @@ export default function Dashboard({ user, userDoc }) {
       .sort((a, b) => a.gap - b.gap); // Sort from most competitive to least competitive
   }, [filas]);
 
+  // Scatter Plot Positioning Matrix Data (Mi Precio USD vs. Promedio Mercado USD)
+  const scatterPlotData = useMemo(() => {
+    return filas
+      .filter(item => item.propioPriceUsd !== null && item.avgCompUsd !== null && item.avgCompUsd > 0)
+      .map(item => ({
+        id: item.producto.id_interno,
+        name: item.producto.nombre,
+        categoria: item.producto.categoria || 'Sin Cat',
+        x: parseFloat(item.avgCompUsd.toFixed(2)),
+        y: parseFloat(item.propioPriceUsd.toFixed(2)),
+        diffAvgPercent: item.diffAvgPercent ? parseFloat(item.diffAvgPercent.toFixed(1)) : 0,
+        dispersionPercent: parseFloat(item.dispersionPercent.toFixed(1)),
+        ranking: item.ranking,
+        totalOptions: item.totalOptionsCount,
+        producto: item.producto,
+        competencia: item.competencia,
+      }));
+  }, [filas]);
+
   // Currency Formatter Helper
   const fmt = (priceUsd) => {
     if (priceUsd == null || isNaN(priceUsd)) return '—';
@@ -797,6 +816,41 @@ export default function Dashboard({ user, userDoc }) {
               ? `Estás un ${gapAbs}% más barato que el promedio.` 
               : `Estás un ${gapAbs}% más caro que el promedio.`}
           </p>
+        </div>
+      );
+    }
+    return null;
+  };
+
+  // Custom scatter tooltip for positioning matrix
+  const CustomScatterTooltip = ({ active, payload }) => {
+    if (active && payload && payload.length) {
+      const data = payload[0].payload;
+      const rate = currency === 'usd' ? 1 : (bcv.rate || 1);
+      const symbol = currency === 'usd' ? '$' : 'Bs ';
+
+      return (
+        <div className="bg-white border border-outline-variant p-3.5 rounded-2xl shadow-xl text-xs space-y-1.5 max-w-xs font-sans">
+          <div className="font-bold text-primary font-display border-b border-outline-variant/40 pb-1">{data.name}</div>
+          <div className="text-[10px] text-on-surface-variant font-mono">{data.categoria} · {data.id}</div>
+          <div className="grid grid-cols-2 gap-3 pt-1 font-mono">
+            <div className="bg-surface-low p-2 rounded-xl border border-outline-variant/30">
+              <span className="text-[10px] text-on-surface-variant font-sans block">Mi Precio:</span>
+              <span className="font-bold text-primary text-sm">{symbol}{(data.y * rate).toFixed(2)}</span>
+            </div>
+            <div className="bg-surface-low p-2 rounded-xl border border-outline-variant/30">
+              <span className="text-[10px] text-on-surface-variant font-sans block">Prom. Mercado:</span>
+              <span className="font-bold text-secondary text-sm">{symbol}{(data.x * rate).toFixed(2)}</span>
+            </div>
+          </div>
+          <div className="text-[11px] font-mono pt-1 flex justify-between items-center">
+            <span className={data.diffAvgPercent > 0 ? 'text-red-700 font-bold' : 'text-emerald-700 font-bold'}>
+              Brecha: {data.diffAvgPercent > 0 ? '+' : ''}{data.diffAvgPercent}%
+            </span>
+            <span className="text-on-surface-variant bg-surface-low px-2 py-0.5 rounded-full text-[10px]">
+              Posición: #{data.ranking || '—'} / {data.totalOptions}
+            </span>
+          </div>
         </div>
       );
     }
@@ -1212,6 +1266,66 @@ export default function Dashboard({ user, userDoc }) {
           </div>
         </div>
       </div>
+
+      {/* Positioning Matrix (Scatter Chart: Mi Precio vs. Promedio Mercado) */}
+      {scatterPlotData.length > 0 && (
+        <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-outline-variant pb-3 gap-2">
+            <div>
+              <h2 className="font-display font-extrabold text-lg text-primary flex items-center gap-2">
+                <span className="material-symbols-outlined text-xl text-primary">scatter_plot</span>
+                Matriz de Posicionamiento de Precios (Mi Precio vs. Promedio de Mercado)
+              </h2>
+              <p className="text-xs text-on-surface-variant font-sans mt-0.5">
+                Visualización bidimensional: Los puntos por debajo de la diagonal muestran productos donde tu precio es más bajo que el mercado (Verde = Líder en precio), y por encima muestran productos con mayor precio (Rojo = Riesgo de volumen).
+              </p>
+            </div>
+            <div className="flex items-center gap-3 text-xs font-mono font-bold">
+              <span className="flex items-center gap-1 text-emerald-700">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
+                Bajo Promedio Mercado
+              </span>
+              <span className="flex items-center gap-1 text-red-700">
+                <span className="w-2.5 h-2.5 rounded-full bg-red-600"></span>
+                Sobre Promedio Mercado
+              </span>
+            </div>
+          </div>
+
+          <div className="h-80 w-full pt-2">
+            <ResponsiveContainer width="100%" height="100%">
+              <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f3f3f6" />
+                <XAxis 
+                  type="number" 
+                  dataKey="x" 
+                  name="Promedio Mercado" 
+                  unit={currency === 'usd' ? ' $' : ' Bs'} 
+                  tick={{ fontSize: 10, fill: '#464650' }}
+                  label={{ value: `Promedio Mercado (${currency === 'usd' ? 'USD $' : 'Bs'})`, position: 'bottom', offset: 0, fontSize: 11, fill: '#016874', fontWeight: 'bold' }}
+                />
+                <YAxis 
+                  type="number" 
+                  dataKey="y" 
+                  name="Mi Precio" 
+                  unit={currency === 'usd' ? ' $' : ' Bs'} 
+                  tick={{ fontSize: 10, fill: '#464650' }}
+                  label={{ value: `Mi Precio (${currency === 'usd' ? 'USD $' : 'Bs'})`, angle: -90, position: 'insideLeft', offset: 10, fontSize: 11, fill: '#016874', fontWeight: 'bold' }}
+                />
+                <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomScatterTooltip />} />
+                <Scatter name="Productos Monitoreados" data={scatterPlotData} onClick={(entry) => setSelectedProduct({ producto: entry.producto, competencia: entry.competencia })}>
+                  {scatterPlotData.map((entry, index) => {
+                    const isCheaper = entry.y < entry.x;
+                    const isEqual = Math.abs(entry.y - entry.x) < 0.05;
+                    const color = isCheaper ? '#10b981' : isEqual ? '#016874' : '#f43f5e';
+                    return <Cell key={`scatter-cell-${index}`} fill={color} className="cursor-pointer hover:opacity-80 transition-opacity" />;
+                  })}
+                </Scatter>
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* Dynamic Generic vs Brand Parity Analysis Card */}
       {analisisMoleculaParidad.length > 0 && (

@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from 'react';
 import { useBcvRate } from '../hooks/useBcvRate';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
+import { exportToCSV } from '../utils/exportUtils';
 import {
   ResponsiveContainer, CartesianGrid, XAxis, YAxis, Tooltip,
   BarChart, Bar, Cell, ReferenceLine
@@ -684,6 +685,43 @@ export default function Simulador({ user, userDoc }) {
     document.body.removeChild(link);
   };
 
+  const handleExportarSimulacion = () => {
+    const headers = [
+      { label: 'ID Interno', key: 'id' },
+      { label: 'Producto', key: 'nombre' },
+      { label: 'Categoría', key: 'categoria' },
+      { label: 'Precio Base USD', key: 'precioPropioUsd' },
+      { label: 'Precio Simulado USD', key: 'precioSimuladoUsd' },
+      { label: 'Variación Aplicada (%)', key: 'variacion' },
+      { label: 'Promedio Mercado USD', key: 'avgCompUsd' },
+      { label: 'Brecha Mercado Sim. (%)', key: 'brechaSimulada' }
+    ];
+
+    const dataRows = analizados.map(item => {
+      const precioPropio = item.propioPriceUsd || 0;
+      const precioSimulado = precioPropio * (1 + simulacionVariacion / 100);
+      const avgComp = item.avgCompUsd || 0;
+      let brechaSim = 0;
+      if (avgComp > 0) {
+        brechaSim = ((precioSimulado - avgComp) / avgComp) * 100;
+      }
+
+      return {
+        id: item.producto.id_interno,
+        nombre: item.producto.nombre,
+        categoria: item.producto.categoria || 'Sin Cat',
+        precioPropioUsd: precioPropio ? precioPropio.toFixed(2) : '—',
+        precioSimuladoUsd: precioSimulado ? precioSimulado.toFixed(2) : '—',
+        variacion: `${simulacionVariacion > 0 ? '+' : ''}${simulacionVariacion}%`,
+        avgCompUsd: avgComp ? avgComp.toFixed(2) : '—',
+        brechaSimulada: avgComp > 0 ? `${brechaSim > 0 ? '+' : ''}${brechaSim.toFixed(1)}%` : '—'
+      };
+    });
+
+    exportToCSV(`Simulacion_Precios_Estrategica_${simulacionVariacion}pct`, headers, dataRows);
+    addToast(`Simulación exportada a CSV con variacion de ${simulacionVariacion}%.`, 'success');
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-24 space-y-4">
@@ -708,30 +746,41 @@ export default function Simulador({ user, userDoc }) {
           </p>
         </div>
 
-        {/* Price mode toggle */}
-        <div className="flex items-center gap-3 bg-white p-1.5 rounded-2xl border border-outline-variant shadow-sm w-fit self-end md:self-center">
+        {/* Price mode toggle and export button */}
+        <div className="flex flex-wrap items-center gap-3">
           <button
-            onClick={() => setDashboardPriceMode('descuento')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-              dashboardPriceMode === 'descuento' 
-                ? 'bg-primary text-on-primary shadow-sm' 
-                : 'text-on-surface-variant hover:bg-surface/50'
-            }`}
+            onClick={handleExportarSimulacion}
+            className="px-4 py-2 bg-white border border-outline-variant hover:bg-surface-low rounded-2xl text-xs font-bold text-primary transition-all flex items-center gap-1.5 shadow-sm"
+            title="Exportar productos y sus precios simulados a CSV"
           >
-            <span className="material-symbols-outlined text-[14px]">sell</span>
-            Con Descuento
+            <span className="material-symbols-outlined text-[16px]">download</span>
+            Exportar Simulación CSV
           </button>
-          <button
-            onClick={() => setDashboardPriceMode('lista')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
-              dashboardPriceMode === 'lista' 
-                ? 'bg-primary text-on-primary shadow-sm' 
-                : 'text-on-surface-variant hover:bg-surface/50'
-            }`}
-          >
-            <span className="material-symbols-outlined text-[14px]">receipt_long</span>
-            Precio de Lista
-          </button>
+
+          <div className="flex items-center gap-1.5 bg-white p-1.5 rounded-2xl border border-outline-variant shadow-sm">
+            <button
+              onClick={() => setDashboardPriceMode('descuento')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                dashboardPriceMode === 'descuento' 
+                  ? 'bg-primary text-on-primary shadow-sm' 
+                  : 'text-on-surface-variant hover:bg-surface/50'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[14px]">sell</span>
+              Con Descuento
+            </button>
+            <button
+              onClick={() => setDashboardPriceMode('lista')}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                dashboardPriceMode === 'lista' 
+                  ? 'bg-primary text-on-primary shadow-sm' 
+                  : 'text-on-surface-variant hover:bg-surface/50'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[14px]">receipt_long</span>
+              Precio de Lista
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1063,11 +1112,22 @@ export default function Simulador({ user, userDoc }) {
               />
 
               {/* Slider Quick Preset Buttons */}
-              <div className="grid grid-cols-4 gap-1 text-[9px] font-mono font-bold text-center">
-                <button onClick={() => setSimulacionVariacion(-15)} className="p-1 bg-white border border-outline-variant hover:bg-surface rounded">-15%</button>
-                <button onClick={() => setSimulacionVariacion(-5)} className="p-1 bg-white border border-outline-variant hover:bg-surface rounded">-5%</button>
-                <button onClick={() => setSimulacionVariacion(0)} className="p-1 bg-white border border-outline-variant hover:bg-surface rounded font-extrabold text-primary text-center">0%</button>
-                <button onClick={() => setSimulacionVariacion(10)} className="p-1 bg-white border border-outline-variant hover:bg-surface rounded font-bold">+10%</button>
+              <div className="space-y-1 pt-1">
+                <span className="text-[9px] uppercase font-mono text-on-surface-variant block font-bold">Escenarios Preconfigurados:</span>
+                <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono font-bold text-center">
+                  <button onClick={() => setSimulacionVariacion(-10)} className={`p-1.5 rounded-lg border transition-all ${simulacionVariacion === -10 ? 'bg-primary text-on-primary border-primary' : 'bg-white border-outline-variant hover:bg-surface text-on-surface'}`}>
+                    -10% Agresivo
+                  </button>
+                  <button onClick={() => setSimulacionVariacion(-3)} className={`p-1.5 rounded-lg border transition-all ${simulacionVariacion === -3 ? 'bg-primary text-on-primary border-primary' : 'bg-white border-outline-variant hover:bg-surface text-on-surface'}`}>
+                    -3% Descuento
+                  </button>
+                  <button onClick={() => setSimulacionVariacion(0)} className={`p-1.5 rounded-lg border transition-all ${simulacionVariacion === 0 ? 'bg-primary text-on-primary border-primary' : 'bg-white border-outline-variant hover:bg-surface text-on-surface'}`}>
+                    0% Base Actual
+                  </button>
+                  <button onClick={() => setSimulacionVariacion(5)} className={`p-1.5 rounded-lg border transition-all ${simulacionVariacion === 5 ? 'bg-primary text-on-primary border-primary' : 'bg-white border-outline-variant hover:bg-surface text-on-surface'}`}>
+                    +5% Inflación
+                  </button>
+                </div>
               </div>
             </div>
 

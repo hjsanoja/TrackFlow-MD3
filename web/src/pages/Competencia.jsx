@@ -5,6 +5,7 @@ import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
+import { exportToCSV } from '../utils/exportUtils';
 
 const TIPOS = [
   { value: 'propio', label: 'Mi marca' },
@@ -64,6 +65,19 @@ export default function Competencia() {
         (a.marca || '').localeCompare(b.marca || '');
     });
   }, [filtrados]);
+
+  const [paginaActual, setPaginaActual] = useState(1);
+  const itemsPorPagina = 20;
+
+  useEffect(() => {
+    setPaginaActual(1);
+  }, [search, filtroCadena, filtroProducto, filtroTipo]);
+
+  const totalPaginas = Math.max(1, Math.ceil(ordenados.length / itemsPorPagina));
+  const itemsPaginados = useMemo(() => {
+    const inicio = (paginaActual - 1) * itemsPorPagina;
+    return ordenados.slice(inicio, inicio + itemsPorPagina);
+  }, [ordenados, paginaActual]);
 
   // Si estamos viendo solo un producto y no tiene URLs, mostramos hint
   const productoFiltradoSinUrls = useMemo(() => {
@@ -420,6 +434,32 @@ export default function Competencia() {
     document.body.removeChild(link);
   };
 
+  const handleExportarEnlaces = () => {
+    const headers = [
+      { label: 'Producto Propio', key: 'producto_propio' },
+      { label: 'Cadena/Competidor', key: 'cadena' },
+      { label: 'Marca/Línea', key: 'marca' },
+      { label: 'Tipo', key: 'tipo_str' },
+      { label: 'Precio Full (Bs)', key: 'ultimo_precio_full_bs' },
+      { label: 'Precio Desc (Bs)', key: 'ultimo_precio_desc_bs' },
+      { label: 'Estado del Link', key: 'estado_str' },
+      { label: 'URL Monitoreada', key: 'url' }
+    ];
+
+    const dataRows = ordenados.map(it => ({
+      ...it,
+      producto_propio: productoNombre(it.id_producto_propio),
+      tipo_str: it.tipo === 'propio' ? 'MI MARCA' : 'COMPETENCIA',
+      ultimo_precio_full_bs: it.ultimo_precio_full_bs || '—',
+      ultimo_precio_desc_bs: it.ultimo_precio_desc_bs || '—',
+      estado_str: it.ultimo_exito ? 'OK / ACTIVO' : 'FALLO LECTURA',
+      url: it.url || ''
+    }));
+
+    exportToCSV('Enlaces_Competencia_Monitoreados', headers, dataRows);
+    addToast(`Exportados ${dataRows.length} enlaces a CSV.`, 'success');
+  };
+
   return (
     <div className="space-y-6 text-on-surface">
       {/* Title Header Block */}
@@ -430,7 +470,13 @@ export default function Competencia() {
             Vincula productos locales con URLs externas para el monitoreo automático de precios.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
+          <button onClick={handleExportarEnlaces}
+            className="text-xs px-4 py-2.5 bg-white border border-outline-variant hover:bg-surface-low font-bold text-primary rounded-full transition-all flex items-center gap-1.5 shadow-sm"
+            title="Exportar enlaces filtrados a archivo CSV">
+            <span className="material-symbols-outlined text-base">download</span>
+            <span>Exportar CSV</span>
+          </button>
           <button onClick={() => setShowCsvModal(true)}
             className="text-xs px-4 py-2.5 bg-white border border-outline-variant hover:bg-surface-low font-bold text-primary rounded-full transition-all flex items-center gap-1.5 shadow-sm">
             <span className="material-symbols-outlined text-base">upload_file</span>
@@ -613,7 +659,7 @@ export default function Competencia() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-outline-variant/30">
-                {ordenados.map(it => (
+                {itemsPaginados.map(it => (
                   <tr key={it.id} className="hover:bg-surface-low transition-colors">
                     <td className="px-6 py-4">
                       <div className="font-bold text-on-surface font-display text-sm truncate max-w-xs" title={productoNombre(it.id_producto_propio)}>
@@ -735,6 +781,38 @@ export default function Competencia() {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* Pagination Footer */}
+        {ordenados.length > 0 && (
+          <div className="px-6 py-4 bg-surface-low border-t border-outline-variant flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="text-xs text-on-surface-variant font-mono">
+              Mostrando <span className="font-bold text-primary">{Math.min(ordenados.length, (paginaActual - 1) * itemsPorPagina + 1)}</span> - <span className="font-bold text-primary">{Math.min(ordenados.length, paginaActual * itemsPorPagina)}</span> de <span className="font-bold text-primary">{ordenados.length}</span> enlaces
+            </div>
+            {totalPaginas > 1 && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPaginaActual(p => Math.max(1, p - 1))}
+                  disabled={paginaActual === 1}
+                  className="px-3 py-1.5 rounded-lg border border-outline-variant bg-white text-xs font-bold text-primary disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-all flex items-center gap-1"
+                >
+                  <span className="material-symbols-outlined text-sm">chevron_left</span>
+                  Anterior
+                </button>
+                <span className="text-xs font-mono font-bold px-3 py-1 bg-white border border-outline-variant rounded-lg text-primary">
+                  {paginaActual} / {totalPaginas}
+                </span>
+                <button
+                  onClick={() => setPaginaActual(p => Math.min(totalPaginas, p + 1))}
+                  disabled={paginaActual === totalPaginas}
+                  className="px-3 py-1.5 rounded-lg border border-outline-variant bg-white text-xs font-bold text-primary disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-50 transition-all flex items-center gap-1"
+                >
+                  Siguiente
+                  <span className="material-symbols-outlined text-sm">chevron_right</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
