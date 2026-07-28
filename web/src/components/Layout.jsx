@@ -8,10 +8,12 @@ export default function Layout({ user, userDoc, children }) {
   const isAdmin = userDoc?.rol === 'administrador';
   const handleLogout = () => signOut(auth);
 
+  // Versión 1.2: Menús 'Análisis' y 'Hallazgos' ocultados temporalmente por solicitud del usuario.
+  // Para reactivarlos en el futuro, descomentar las siguientes líneas:
   const navItems = [
     { to: '/', label: 'Dashboard', icon: 'dashboard', adminOnly: false },
-    { to: '/simulador', label: 'Análisis', icon: 'insights', adminOnly: false },
-    { to: '/hallazgos', label: 'Hallazgos', icon: 'troubleshoot', adminOnly: false },
+    // { to: '/simulador', label: 'Análisis', icon: 'insights', adminOnly: false }, // REAC_ANÁLISIS_V1.2
+    // { to: '/hallazgos', label: 'Hallazgos', icon: 'troubleshoot', adminOnly: false }, // REAC_HALLAZGOS_V1.2
     { to: '/productos', label: 'Productos', icon: 'medication', adminOnly: true },
     { to: '/competencia', label: 'Competencia', icon: 'link', adminOnly: true },
     { to: '/cadenas', label: 'Cadenas', icon: 'storefront', adminOnly: true },

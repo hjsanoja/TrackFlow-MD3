@@ -6,9 +6,10 @@ import ProductDetailModal from '../components/ProductDetailModal';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
+import { parseUnidosisCount } from '../utils/unidosisUtils';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  BarChart, Bar, Cell, Legend, ScatterChart, Scatter, ReferenceLine
+  BarChart, Bar, Cell, Legend, ReferenceLine
 } from 'recharts';
 
 export default function Dashboard({ user, userDoc }) {
@@ -26,6 +27,7 @@ export default function Dashboard({ user, userDoc }) {
   const ultimaCorrida = localUltimaCorrida || globalUltimaCorrida;
 
   const [currency, setCurrency] = useState('usd');
+  const [analisisMode, setAnalisisMode] = useState('empaque'); // 'empaque' or 'unidosis'
   const [search, setSearch] = useState('');
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('Todas');
   const [tipoMercadoSeleccionado, setTipoMercadoSeleccionado] = useState('Todos');
@@ -176,12 +178,20 @@ export default function Dashboard({ user, userDoc }) {
       .map(p => {
         const compItems = productosCompetencia.filter(pc => pc.id_producto_propio === p.id_interno && pc.activo);
         
+        const pUnidosisCount = parseUnidosisCount(p.tamano || p.presentacion, p.nombre, p.unidosis || p.unidades_empaque);
+        const pUnitFactor = analisisMode === 'unidosis' ? Math.max(pUnidosisCount, 1) : 1;
+
         // Find competitor prices (converted to USD using current rate for standard comparison)
         const chainPrices = compItems.map(c => {
-          const priceBs = dashboardPriceMode === 'descuento'
+          const rawPriceBs = dashboardPriceMode === 'descuento'
             ? (c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs)
             : c.ultimo_precio_full_bs;
-          if (!priceBs || !bcv.rate) return null;
+          if (!rawPriceBs || !bcv.rate) return null;
+
+          const cUnidosisCount = parseUnidosisCount(c.tamano, c.marca, c.unidosis || c.unidades_empaque) || pUnidosisCount;
+          const cUnitFactor = analisisMode === 'unidosis' ? Math.max(cUnidosisCount, 1) : 1;
+
+          const priceBs = rawPriceBs / cUnitFactor;
 
           // Calculate history trend for this competitor
           const k = getHistoryKey(p.id_interno, c.cadena, c.marca);
@@ -192,10 +202,11 @@ export default function Dashboard({ user, userDoc }) {
           const currentVal = currentHist ? (dashboardPriceMode === 'descuento' ? (currentHist.precio_desc_bs || currentHist.precio_full_bs) : currentHist.precio_full_bs) : null;
           const prevVal = previousHist ? (dashboardPriceMode === 'descuento' ? (previousHist.precio_desc_bs || previousHist.precio_full_bs) : previousHist.precio_full_bs) : null;
           
-          const valNow = currentVal !== null ? currentVal : priceBs;
+          const valNow = currentVal !== null ? currentVal / cUnitFactor : priceBs;
+          const valPrevAdjusted = prevVal !== null ? prevVal / cUnitFactor : null;
           let changePercent = 0;
-          if (valNow && prevVal && prevVal > 0) {
-            changePercent = ((valNow - prevVal) / prevVal) * 100;
+          if (valNow && valPrevAdjusted && valPrevAdjusted > 0) {
+            changePercent = ((valNow - valPrevAdjusted) / valPrevAdjusted) * 100;
           }
 
           return {
@@ -206,8 +217,9 @@ export default function Dashboard({ user, userDoc }) {
             priceBs: priceBs,
             marca: c.marca,
             url: c.url,
+            unidosisCount: cUnidosisCount,
             changePercent,
-            valPrev: prevVal,
+            valPrev: valPrevAdjusted,
           };
         }).filter(v => v !== null && v.priceUsd > 0);
 
@@ -242,11 +254,12 @@ export default function Dashboard({ user, userDoc }) {
 
         // Find own price
         const propioItem = compItems.find(c => c.tipo === 'propio');
-        const propioPriceBs = propioItem ? (
+        const rawPropioPriceBs = propioItem ? (
           dashboardPriceMode === 'descuento'
             ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs)
             : propioItem.ultimo_precio_full_bs
         ) : null;
+        const propioPriceBs = rawPropioPriceBs ? rawPropioPriceBs / pUnitFactor : null;
         const propioPriceUsd = (propioPriceBs && bcv.rate) ? (propioPriceBs / bcv.rate) : null;
 
         // Difference vs cheapest (minCompUsd)
@@ -281,9 +294,10 @@ export default function Dashboard({ user, userDoc }) {
           hasChangesToday,
           ranking,
           totalOptionsCount,
+          pUnidosisCount,
         };
       });
-  }, [productos, productosCompetencia, bcv.rate, dashboardPriceMode, historicoPrecios]);
+  }, [productos, productosCompetencia, bcv.rate, dashboardPriceMode, historicoPrecios, analisisMode]);
 
   // Filtered rows
   const filas = useMemo(() => {
@@ -447,168 +461,6 @@ export default function Dashboard({ user, userDoc }) {
     }));
   }, [filas, cadenasUnicas]);
 
-  // Indicator: In which pharmacy chain are our products most expensive on average?
-  const cadenaComparacionCostos = useMemo(() => {
-    if (!filas || filas.length === 0 || cadenasUnicas.length === 0) return null;
-
-    const statsPorCadena = cadenasUnicas.map(cName => {
-      let sumDiffPct = 0;
-      let count = 0;
-      let masCostososCount = 0;
-      let masBaratosCount = 0;
-
-      filas.forEach(item => {
-        if (!item.propioPriceUsd || item.propioPriceUsd <= 0) return;
-        
-        const compInChain = item.chainPrices.find(x => x.cadena.toLowerCase().trim() === cName.toLowerCase().trim() && x.tipo !== 'propio');
-        if (compInChain && compInChain.priceUsd > 0) {
-          const diffPct = ((item.propioPriceUsd - compInChain.priceUsd) / compInChain.priceUsd) * 100;
-          sumDiffPct += diffPct;
-          count++;
-          if (diffPct > 1) masCostososCount++;
-          if (diffPct < -1) masBaratosCount++;
-        }
-      });
-
-      const avgDiff = count > 0 ? sumDiffPct / count : null;
-      return {
-        cadena: cName,
-        avgDiff,
-        count,
-        masCostososCount,
-        masBaratosCount
-      };
-    }).filter(s => s.count > 0 && s.avgDiff !== null);
-
-    if (statsPorCadena.length === 0) return null;
-
-    // Sort from highest average diff (most expensive) to lowest (most competitive)
-    statsPorCadena.sort((a, b) => b.avgDiff - a.avgDiff);
-
-    const cadenaMasCostosa = statsPorCadena[0];
-    const cadenaMasBarata = statsPorCadena[statsPorCadena.length - 1];
-
-    return {
-      ranking: statsPorCadena,
-      cadenaMasCostosa,
-      cadenaMasBarata
-    };
-  }, [filas, cadenasUnicas]);
-
-  // Indicator: Share of Voice (SoV) de Precios y Cobertura de Competidores
-  const shareOfVoiceData = useMemo(() => {
-    if (!filas || filas.length === 0 || cadenasUnicas.length === 0) return [];
-
-    const totalProductos = filas.length;
-
-    return cadenasUnicas.map(cName => {
-      let skusMonitoreados = 0;
-      let lowestCount = 0;
-      let highestCount = 0;
-      let totalComparados = 0;
-
-      filas.forEach(item => {
-        const hasChain = item.chainPrices.some(x => x.cadena.toLowerCase().trim() === cName.toLowerCase().trim());
-        if (hasChain) skusMonitoreados++;
-
-        if (item.minCompUsd && item.chainPrices.some(x => x.cadena.toLowerCase().trim() === cName.toLowerCase().trim() && x.tipo !== 'propio')) {
-          totalComparados++;
-          if (item.cheapestChains.some(ch => ch.toLowerCase().trim() === cName.toLowerCase().trim())) {
-            lowestCount++;
-          }
-          if (item.mostExpensiveChains.some(ch => ch.toLowerCase().trim() === cName.toLowerCase().trim())) {
-            highestCount++;
-          }
-        }
-      });
-
-      const coveragePct = totalProductos > 0 ? (skusMonitoreados / totalProductos) * 100 : 0;
-      const cheapestSoVPct = totalComparados > 0 ? (lowestCount / totalComparados) * 100 : 0;
-
-      return {
-        cadena: cName,
-        skusMonitoreados,
-        coveragePct,
-        lowestCount,
-        highestCount,
-        totalComparados,
-        cheapestSoVPct
-      };
-    }).sort((a, b) => b.cheapestSoVPct - a.cheapestSoVPct);
-  }, [filas, cadenasUnicas]);
-
-  // Indicator: Elasticidad Histórica por Molécula
-  const elasticidadPorMolecula = useMemo(() => {
-    if (!filas || filas.length === 0) return [];
-
-    const grouped = {};
-    filas.forEach(item => {
-      const principio = (item.producto.principio_activo || '').trim();
-      if (!principio) return;
-      
-      const key = principio.toLowerCase();
-      if (!grouped[key]) {
-        grouped[key] = {
-          nombre: principio,
-          items: [],
-        };
-      }
-      grouped[key].items.push(item);
-    });
-
-    const moleculasList = Object.values(grouped).map(g => {
-      const totalSkus = g.items.length;
-      const marcasCount = g.items.filter(x => (x.producto.market_type || '').toUpperCase() === 'MARCA').length;
-      const genericosCount = totalSkus - marcasCount;
-
-      const dispersions = g.items.map(x => x.dispersionPercent).filter(d => d > 0);
-      const avgDispersion = dispersions.length > 0 ? dispersions.reduce((a,b) => a+b, 0) / dispersions.length : 0;
-
-      let totalChangeCount = 0;
-      let sumAbsChanges = 0;
-      g.items.forEach(x => {
-        x.chainPrices.forEach(cp => {
-          if (cp.changePercent && Math.abs(cp.changePercent) > 0) {
-            sumAbsChanges += Math.abs(cp.changePercent);
-            totalChangeCount++;
-          }
-        });
-      });
-      const avgVolatilidad = totalChangeCount > 0 ? sumAbsChanges / totalChangeCount : 0;
-
-      const elasticityScore = (avgDispersion * 0.6) + (avgVolatilidad * 0.4);
-
-      let tipoElasticidad = 'Moderada';
-      let badgeClass = 'bg-blue-100 text-blue-800 border-blue-200';
-      let recomendacion = 'Comportamiento en paridad estándar.';
-
-      if (elasticityScore > 18 || avgDispersion > 25) {
-        tipoElasticidad = 'Alta Elasticidad (Sensible)';
-        badgeClass = 'bg-red-100 text-red-800 border-red-200';
-        recomendacion = 'Sensibilidad alta al precio. Aumentos provocan rápida migración a genéricos u otra cadena.';
-      } else if (elasticityScore < 10 && avgDispersion < 12) {
-        tipoElasticidad = 'Inelástico (Oportunidad EBITDA)';
-        badgeClass = 'bg-emerald-100 text-emerald-800 border-emerald-200';
-        recomendacion = 'Baja sensibilidad. Oportunidad para realizar ajustes al alza y capturar margen de beneficio.';
-      }
-
-      return {
-        nombre: g.nombre,
-        totalSkus,
-        marcasCount,
-        genericosCount,
-        avgDispersion,
-        avgVolatilidad,
-        elasticityScore,
-        tipoElasticidad,
-        badgeClass,
-        recomendacion
-      };
-    });
-
-    return moleculasList.sort((a, b) => b.elasticityScore - a.elasticityScore);
-  }, [filas]);
-
   // High volatility/dispersion alerts: dispersion > 20%
   const altaVolatilidad = useMemo(() => {
     return filas.filter(item => item.dispersionPercent > 20).sort((a,b) => b.dispersionPercent - a.dispersionPercent);
@@ -756,25 +608,6 @@ export default function Dashboard({ user, userDoc }) {
       .sort((a, b) => a.gap - b.gap); // Sort from most competitive to least competitive
   }, [filas]);
 
-  // Scatter Plot Positioning Matrix Data (Mi Precio USD vs. Promedio Mercado USD)
-  const scatterPlotData = useMemo(() => {
-    return filas
-      .filter(item => item.propioPriceUsd !== null && item.avgCompUsd !== null && item.avgCompUsd > 0)
-      .map(item => ({
-        id: item.producto.id_interno,
-        name: item.producto.nombre,
-        categoria: item.producto.categoria || 'Sin Cat',
-        x: parseFloat(item.avgCompUsd.toFixed(2)),
-        y: parseFloat(item.propioPriceUsd.toFixed(2)),
-        diffAvgPercent: item.diffAvgPercent ? parseFloat(item.diffAvgPercent.toFixed(1)) : 0,
-        dispersionPercent: parseFloat(item.dispersionPercent.toFixed(1)),
-        ranking: item.ranking,
-        totalOptions: item.totalOptionsCount,
-        producto: item.producto,
-        competencia: item.competencia,
-      }));
-  }, [filas]);
-
   // Currency Formatter Helper
   const fmt = (priceUsd) => {
     if (priceUsd == null || isNaN(priceUsd)) return '—';
@@ -816,41 +649,6 @@ export default function Dashboard({ user, userDoc }) {
               ? `Estás un ${gapAbs}% más barato que el promedio.` 
               : `Estás un ${gapAbs}% más caro que el promedio.`}
           </p>
-        </div>
-      );
-    }
-    return null;
-  };
-
-  // Custom scatter tooltip for positioning matrix
-  const CustomScatterTooltip = ({ active, payload }) => {
-    if (active && payload && payload.length) {
-      const data = payload[0].payload;
-      const rate = currency === 'usd' ? 1 : (bcv.rate || 1);
-      const symbol = currency === 'usd' ? '$' : 'Bs ';
-
-      return (
-        <div className="bg-white border border-outline-variant p-3.5 rounded-2xl shadow-xl text-xs space-y-1.5 max-w-xs font-sans">
-          <div className="font-bold text-primary font-display border-b border-outline-variant/40 pb-1">{data.name}</div>
-          <div className="text-[10px] text-on-surface-variant font-mono">{data.categoria} · {data.id}</div>
-          <div className="grid grid-cols-2 gap-3 pt-1 font-mono">
-            <div className="bg-surface-low p-2 rounded-xl border border-outline-variant/30">
-              <span className="text-[10px] text-on-surface-variant font-sans block">Mi Precio:</span>
-              <span className="font-bold text-primary text-sm">{symbol}{(data.y * rate).toFixed(2)}</span>
-            </div>
-            <div className="bg-surface-low p-2 rounded-xl border border-outline-variant/30">
-              <span className="text-[10px] text-on-surface-variant font-sans block">Prom. Mercado:</span>
-              <span className="font-bold text-secondary text-sm">{symbol}{(data.x * rate).toFixed(2)}</span>
-            </div>
-          </div>
-          <div className="text-[11px] font-mono pt-1 flex justify-between items-center">
-            <span className={data.diffAvgPercent > 0 ? 'text-red-700 font-bold' : 'text-emerald-700 font-bold'}>
-              Brecha: {data.diffAvgPercent > 0 ? '+' : ''}{data.diffAvgPercent}%
-            </span>
-            <span className="text-on-surface-variant bg-surface-low px-2 py-0.5 rounded-full text-[10px]">
-              Posición: #{data.ranking || '—'} / {data.totalOptions}
-            </span>
-          </div>
         </div>
       );
     }
@@ -976,13 +774,28 @@ export default function Dashboard({ user, userDoc }) {
             Análisis de volatilidad, liderazgo de precios por cadena farmacéutica y tasas de cambio.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Mode Switcher: Empaque vs Unidosis */}
+          <div className="flex bg-surface-low border border-outline-variant rounded-full p-1 text-xs font-mono font-bold shadow-sm">
+            <button onClick={() => setAnalisisMode('empaque')}
+              className={`px-3 py-1.5 rounded-full transition-all flex items-center gap-1 ${analisisMode === 'empaque' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>
+              <span className="material-symbols-outlined text-[14px]">inventory_2</span>
+              Empaque
+            </button>
+            <button onClick={() => setAnalisisMode('unidosis')}
+              className={`px-3 py-1.5 rounded-full transition-all flex items-center gap-1 ${analisisMode === 'unidosis' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}
+              title="Analizar precios normalizados por 1 unidad/tableta/dosis">
+              <span className="material-symbols-outlined text-[14px]">medication</span>
+              Por Unidosis
+            </button>
+          </div>
+
           {/* Currency Switcher widget */}
-          <div className="flex bg-surface-low border border-outline-variant rounded-full p-1 text-xs font-mono font-bold">
+          <div className="flex bg-surface-low border border-outline-variant rounded-full p-1 text-xs font-mono font-bold shadow-sm">
             <button onClick={() => setCurrency('usd')}
-              className={`px-4 py-1.5 rounded-full transition-all ${currency === 'usd' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>USD ($)</button>
+              className={`px-3.5 py-1.5 rounded-full transition-all ${currency === 'usd' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>USD ($)</button>
             <button onClick={() => setCurrency('bs')}
-              className={`px-4 py-1.5 rounded-full transition-all ${currency === 'bs' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>BS (Bs)</button>
+              className={`px-3.5 py-1.5 rounded-full transition-all ${currency === 'bs' ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}>BS (Bs)</button>
           </div>
 
           <button onClick={downloadReport}
@@ -1267,66 +1080,6 @@ export default function Dashboard({ user, userDoc }) {
         </div>
       </div>
 
-      {/* Positioning Matrix (Scatter Chart: Mi Precio vs. Promedio Mercado) */}
-      {scatterPlotData.length > 0 && (
-        <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-outline-variant pb-3 gap-2">
-            <div>
-              <h2 className="font-display font-extrabold text-lg text-primary flex items-center gap-2">
-                <span className="material-symbols-outlined text-xl text-primary">scatter_plot</span>
-                Matriz de Posicionamiento de Precios (Mi Precio vs. Promedio de Mercado)
-              </h2>
-              <p className="text-xs text-on-surface-variant font-sans mt-0.5">
-                Visualización bidimensional: Los puntos por debajo de la diagonal muestran productos donde tu precio es más bajo que el mercado (Verde = Líder en precio), y por encima muestran productos con mayor precio (Rojo = Riesgo de volumen).
-              </p>
-            </div>
-            <div className="flex items-center gap-3 text-xs font-mono font-bold">
-              <span className="flex items-center gap-1 text-emerald-700">
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-600"></span>
-                Bajo Promedio Mercado
-              </span>
-              <span className="flex items-center gap-1 text-red-700">
-                <span className="w-2.5 h-2.5 rounded-full bg-red-600"></span>
-                Sobre Promedio Mercado
-              </span>
-            </div>
-          </div>
-
-          <div className="h-80 w-full pt-2">
-            <ResponsiveContainer width="100%" height="100%">
-              <ScatterChart margin={{ top: 20, right: 30, bottom: 20, left: 10 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f3f3f6" />
-                <XAxis 
-                  type="number" 
-                  dataKey="x" 
-                  name="Promedio Mercado" 
-                  unit={currency === 'usd' ? ' $' : ' Bs'} 
-                  tick={{ fontSize: 10, fill: '#464650' }}
-                  label={{ value: `Promedio Mercado (${currency === 'usd' ? 'USD $' : 'Bs'})`, position: 'bottom', offset: 0, fontSize: 11, fill: '#016874', fontWeight: 'bold' }}
-                />
-                <YAxis 
-                  type="number" 
-                  dataKey="y" 
-                  name="Mi Precio" 
-                  unit={currency === 'usd' ? ' $' : ' Bs'} 
-                  tick={{ fontSize: 10, fill: '#464650' }}
-                  label={{ value: `Mi Precio (${currency === 'usd' ? 'USD $' : 'Bs'})`, angle: -90, position: 'insideLeft', offset: 10, fontSize: 11, fill: '#016874', fontWeight: 'bold' }}
-                />
-                <Tooltip cursor={{ strokeDasharray: '3 3' }} content={<CustomScatterTooltip />} />
-                <Scatter name="Productos Monitoreados" data={scatterPlotData} onClick={(entry) => setSelectedProduct({ producto: entry.producto, competencia: entry.competencia })}>
-                  {scatterPlotData.map((entry, index) => {
-                    const isCheaper = entry.y < entry.x;
-                    const isEqual = Math.abs(entry.y - entry.x) < 0.05;
-                    const color = isCheaper ? '#10b981' : isEqual ? '#016874' : '#f43f5e';
-                    return <Cell key={`scatter-cell-${index}`} fill={color} className="cursor-pointer hover:opacity-80 transition-opacity" />;
-                  })}
-                </Scatter>
-              </ScatterChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
       {/* Dynamic Generic vs Brand Parity Analysis Card */}
       {analisisMoleculaParidad.length > 0 && (
         <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
@@ -1410,164 +1163,6 @@ export default function Dashboard({ user, userDoc }) {
                 </div>
               );
             })}
-          </div>
-        </div>
-      )}
-
-      {/* Indicador: Cadena en que los productos son más costosos en promedio */}
-      {cadenaComparacionCostos && (
-        <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-outline-variant pb-3 gap-2">
-            <div>
-              <h2 className="font-display font-extrabold text-lg text-primary flex items-center gap-2">
-                <span className="material-symbols-outlined text-xl text-primary">storefront</span>
-                Nivel de Precios Promedio por Cadena Farmacéutica
-              </h2>
-              <p className="text-xs text-on-surface-variant font-sans mt-0.5">
-                Indica en qué cadena nuestros productos resultan más costosos o más económicos en promedio comparado contra ofertas homologables.
-              </p>
-            </div>
-            {cadenaComparacionCostos.cadenaMasCostosa && (
-              <span className="px-3.5 py-1.5 rounded-full text-xs font-mono font-bold bg-amber-100 text-amber-900 border border-amber-300 flex items-center gap-1.5 self-start">
-                <span className="material-symbols-outlined text-sm">trending_up</span>
-                Más costosos en: <strong>{cadenaComparacionCostos.cadenaMasCostosa.cadena}</strong> (+{cadenaComparacionCostos.cadenaMasCostosa.avgDiff.toFixed(1)}%)
-              </span>
-            )}
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {cadenaComparacionCostos.ranking.map(item => {
-              const isCostly = item.avgDiff > 0;
-              return (
-                <div key={item.cadena} className={`p-4 rounded-2xl border ${isCostly ? 'bg-amber-50/50 border-amber-200' : 'bg-emerald-50/50 border-emerald-200'} space-y-2`}>
-                  <div className="flex justify-between items-center">
-                    <span className="font-display font-bold text-sm text-primary">{item.cadena}</span>
-                    <span className={`text-xs font-mono font-extrabold px-2 py-0.5 rounded-full ${isCostly ? 'bg-amber-200/60 text-amber-900' : 'bg-emerald-200/60 text-emerald-900'}`}>
-                      {isCostly ? `+${item.avgDiff.toFixed(1)}%` : `${item.avgDiff.toFixed(1)}%`}
-                    </span>
-                  </div>
-                  <p className="text-xs text-on-surface-variant font-sans">
-                    Nuestros productos son <strong>{isCostly ? 'más costosos' : 'más económicos'}</strong> que en {item.cadena} en promedio.
-                  </p>
-                  <div className="pt-2 border-t border-outline-variant/30 text-[11px] text-on-surface-variant flex justify-between font-mono">
-                    <span>{item.count} SKUs comparados</span>
-                    <span className={isCostly ? 'text-amber-800 font-bold' : 'text-emerald-800 font-bold'}>
-                      {isCostly ? `${item.masCostososCount} arriba` : `${item.masBaratosCount} abajo`}
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Indicador: Share of Voice (SoV) de Precios por Cadena */}
-      {shareOfVoiceData.length > 0 && (
-        <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
-          <div>
-            <h2 className="font-display font-extrabold text-lg text-primary flex items-center gap-2">
-              <span className="material-symbols-outlined text-xl text-primary">pie_chart</span>
-              Share of Voice (SoV) de Precios y Cobertura por Cadena
-            </h2>
-            <p className="text-xs text-on-surface-variant font-sans mt-0.5">
-              Participación de mercado en cobertura de catálogo y porcentaje de liderazgo en precio más bajo.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {shareOfVoiceData.map(ch => (
-              <div key={ch.cadena} className="p-4 rounded-2xl border border-outline-variant bg-surface-low/30 space-y-3">
-                <div className="flex justify-between items-center">
-                  <span className="font-display font-extrabold text-sm text-primary">{ch.cadena}</span>
-                  <span className="text-[10px] font-mono font-bold bg-primary-container text-on-primary-container px-2.5 py-0.5 rounded-full">
-                    {ch.skusMonitoreados} SKUs ({ch.coveragePct.toFixed(0)}%)
-                  </span>
-                </div>
-
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs font-sans">
-                    <span className="text-on-surface-variant">SoV Precio Más Bajo:</span>
-                    <span className="font-bold text-secondary font-mono">{ch.cheapestSoVPct.toFixed(1)}%</span>
-                  </div>
-                  <div className="w-full bg-surface-low rounded-full h-2 overflow-hidden border border-outline-variant/30">
-                    <div className="bg-secondary h-2 rounded-full transition-all duration-500" style={{ width: `${Math.min(100, ch.cheapestSoVPct)}%` }}></div>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-outline-variant/40 grid grid-cols-2 gap-2 text-[11px] font-mono">
-                  <div className="bg-white p-2 rounded-xl text-center border border-outline-variant/30">
-                    <span className="text-[10px] text-on-surface-variant font-sans block">Líder Mínimo</span>
-                    <span className="font-bold text-emerald-700">{ch.lowestCount} prods</span>
-                  </div>
-                  <div className="bg-white p-2 rounded-xl text-center border border-outline-variant/30">
-                    <span className="text-[10px] text-on-surface-variant font-sans block">Máximo Precio</span>
-                    <span className="font-bold text-red-700">{ch.highestCount} prods</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Indicador: Elasticidad Histórica por Molécula */}
-      {elasticidadPorMolecula.length > 0 && (
-        <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-outline-variant pb-3 gap-2">
-            <div>
-              <h2 className="font-display font-extrabold text-lg text-primary flex items-center gap-2">
-                <span className="material-symbols-outlined text-xl text-primary">query_stats</span>
-                Elasticidad Histórica por Molécula (Principio Activo)
-              </h2>
-              <p className="text-xs text-on-surface-variant font-sans mt-0.5">
-                Evaluación de sensibilidad al precio e identificación de oportunidades de alza o protección de volumen por molécula.
-              </p>
-            </div>
-            <span className="text-xs font-mono font-bold text-on-surface-variant bg-surface-low px-3 py-1.5 rounded-full border border-outline-variant self-start">
-              {elasticidadPorMolecula.length} Moléculas Analizadas
-            </span>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs border-collapse">
-              <thead className="bg-surface-low text-primary uppercase font-mono tracking-wider border-b border-outline-variant">
-                <tr>
-                  <th className="text-left px-4 py-3 font-bold">Molécula / Principio Activo</th>
-                  <th className="text-center px-4 py-3 font-bold">SKUs en Catálogo</th>
-                  <th className="text-center px-4 py-3 font-bold">Dispersión Mercado (%)</th>
-                  <th className="text-center px-4 py-3 font-bold">Volatilidad Histórica</th>
-                  <th className="text-center px-4 py-3 font-bold">Clasificación Elasticidad</th>
-                  <th className="text-left px-4 py-3 font-bold">Diagnóstico Strategic EBITDA</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-outline-variant/30 font-sans">
-                {elasticidadPorMolecula.map(m => (
-                  <tr key={m.nombre} className="hover:bg-surface-low/50 transition-colors">
-                    <td className="px-4 py-3 font-bold text-primary font-display text-sm">
-                      {m.nombre}
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono">
-                      <span className="font-bold">{m.totalSkus}</span> <span className="text-[10px] text-on-surface-variant">({m.marcasCount} Marca / {m.genericosCount} Gen)</span>
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono font-bold text-on-surface">
-                      {m.avgDispersion.toFixed(1)}%
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono">
-                      {m.avgVolatilidad > 0 ? `${m.avgVolatilidad.toFixed(1)}%` : 'Estable'}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className={`px-2.5 py-1 text-[10px] font-mono font-bold rounded-full border ${m.badgeClass}`}>
-                        {m.tipoElasticidad}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-on-surface-variant text-[11px]">
-                      {m.recomendacion}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </div>
         </div>
       )}
@@ -1862,6 +1457,7 @@ export default function Dashboard({ user, userDoc }) {
           currency={currency}
           bcvRate={bcv.rate}
           initialPriceMode={dashboardPriceMode}
+          initialAnalisisMode={analisisMode}
           onClose={() => setSelectedProduct(null)}
         />
       )}

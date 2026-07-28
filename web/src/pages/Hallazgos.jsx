@@ -2,10 +2,12 @@ import { useEffect, useState, useMemo } from 'react';
 import { useBcvRate } from '../hooks/useBcvRate';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
+import { parseUnidosisCount } from '../utils/unidosisUtils';
 
 export default function Hallazgos({ user, userDoc }) {
   const { productos, productosCompetencia, historicoPrecios, loadingInitial: loading } = useData();
   const [currency, setCurrency] = useState('usd');
+  const [analisisMode, setAnalisisMode] = useState('empaque'); // 'empaque' or 'unidosis'
   const [search, setSearch] = useState('');
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('Todas');
   const [unSeleccionada, setUnSeleccionada] = useState('Todas');
@@ -37,19 +39,27 @@ export default function Hallazgos({ user, userDoc }) {
       .map(p => {
         const compItems = productosCompetencia.filter(pc => pc.id_producto_propio === p.id_interno && pc.activo);
         
+        const pUnidosisCount = parseUnidosisCount(p.tamano || p.presentacion, p.nombre, p.unidosis || p.unidades_empaque);
+        const pUnitFactor = analisisMode === 'unidosis' ? Math.max(pUnidosisCount, 1) : 1;
+
         // Competitor prices (converted to USD using rate)
         const competitorPricesUsd = compItems
           .filter(c => c.tipo !== 'propio')
           .map(c => {
-            const priceBs = c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs;
-            if (!priceBs || !bcv.rate) return null;
+            const rawPriceBs = c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs;
+            if (!rawPriceBs || !bcv.rate) return null;
+            const cUnidosisCount = parseUnidosisCount(c.tamano, c.marca, c.unidosis || c.unidades_empaque) || pUnidosisCount;
+            const cUnitFactor = analisisMode === 'unidosis' ? Math.max(cUnidosisCount, 1) : 1;
+            const priceBs = rawPriceBs / cUnitFactor;
+
             return {
               id: c.id,
               cadena: c.cadena,
               marca: c.marca,
               priceUsd: priceBs / bcv.rate,
               priceBs: priceBs,
-              url: c.url
+              url: c.url,
+              unidosisCount: cUnidosisCount,
             };
           })
           .filter(Boolean);
@@ -67,7 +77,8 @@ export default function Hallazgos({ user, userDoc }) {
 
         // Our own price details
         const propioItem = compItems.find(c => c.tipo === 'propio');
-        const propioPriceBs = propioItem ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs) : null;
+        const rawPropioPriceBs = propioItem ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs) : null;
+        const propioPriceBs = rawPropioPriceBs ? rawPropioPriceBs / pUnitFactor : null;
         const propioPriceUsd = (propioPriceBs && bcv.rate) ? (propioPriceBs / bcv.rate) : null;
 
         const ipr = (propioPriceUsd && avgCompUsd) ? (propioPriceUsd / avgCompUsd) * 100 : null;
@@ -216,7 +227,7 @@ export default function Hallazgos({ user, userDoc }) {
         };
       })
       .sort((a, b) => b.score - a.score); // Prioritize critical products at the top!
-  }, [productos, productosCompetencia, bcv.rate]);
+  }, [productos, productosCompetencia, bcv.rate, analisisMode]);
 
   // Compute analytics for summary metrics
   const totalConAlertasCriticas = useMemo(() => {
@@ -376,9 +387,32 @@ export default function Hallazgos({ user, userDoc }) {
           </p>
         </div>
 
-        {/* Currency controls & Action button */}
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="bg-white rounded-full border border-outline-variant p-0.5 flex">
+        {/* Mode & Currency controls & Action button */}
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          {/* Mode Switcher: Empaque vs Unidosis */}
+          <div className="bg-white rounded-full border border-outline-variant p-0.5 flex text-xs font-mono font-bold shadow-sm">
+            <button
+              onClick={() => setAnalisisMode('empaque')}
+              className={`px-3.5 py-1.5 rounded-full transition-all flex items-center gap-1 ${
+                analisisMode === 'empaque' ? 'bg-[#040d53] text-white shadow-sm' : 'text-on-surface hover:bg-on-surface/5'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[14px]">inventory_2</span>
+              Empaque
+            </button>
+            <button
+              onClick={() => setAnalisisMode('unidosis')}
+              className={`px-3.5 py-1.5 rounded-full transition-all flex items-center gap-1 ${
+                analisisMode === 'unidosis' ? 'bg-[#040d53] text-white shadow-sm' : 'text-on-surface hover:bg-on-surface/5'
+              }`}
+              title="Analizar hallazgos con precios normalizados por 1 unidad/tableta/dosis"
+            >
+              <span className="material-symbols-outlined text-[14px]">medication</span>
+              Por Unidosis
+            </button>
+          </div>
+
+          <div className="bg-white rounded-full border border-outline-variant p-0.5 flex text-xs font-mono font-bold shadow-sm">
             <button
               onClick={() => setCurrency('usd')}
               className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${

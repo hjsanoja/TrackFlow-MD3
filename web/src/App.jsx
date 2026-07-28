@@ -85,6 +85,7 @@ function AppContent() {
       <Layout user={user} userDoc={userDoc}>
         <Routes>
           <Route path="/" element={<Dashboard user={user} userDoc={userDoc} />} />
+          {/* Versión 1.2: Ocultos del menú en Layout.jsx. Rutas preservadas intactas para cuando se soliciten reactivar */}
           <Route path="/simulador" element={<Simulador user={user} userDoc={userDoc} />} />
           <Route path="/hallazgos" element={<Hallazgos user={user} userDoc={userDoc} />} />
           <Route path="/productos" element={isAdmin ? <Productos /> : <Navigate to="/" />} />

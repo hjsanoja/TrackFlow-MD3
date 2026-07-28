@@ -7,6 +7,7 @@ import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
 import { exportToCSV } from '../utils/exportUtils';
+import { parseUnidosisCount } from '../utils/unidosisUtils';
 
 const CATEGORIAS = [
   'Analgésicos',
@@ -80,6 +81,10 @@ export default function Productos() {
     });
   }, [productos, search, filtroActivo, filtroUrls, filtroTipo, filtroUn, urlsPorProducto]);
 
+  const huerfanos = useMemo(() => {
+    return productos.filter(p => p.activo && (urlsPorProducto.get(p.id_interno) || []).length === 0).length;
+  }, [productos, urlsPorProducto]);
+
   const [paginaActual, setPaginaActual] = useState(1);
   const itemsPorPagina = 20;
 
@@ -93,7 +98,7 @@ export default function Productos() {
     return filtrados.slice(inicio, inicio + itemsPorPagina);
   }, [filtrados, paginaActual]);
 
-  const handleSave = async (data, isNew, activeUrls) => {
+  const handleSave = async (data, isNew) => {
     try {
       const id = data.id_interno.trim();
       if (!id) throw new Error('El ID interno es obligatorio');
@@ -115,36 +120,9 @@ export default function Productos() {
         activo: data.activo ?? true,
       };
 
-      const batch = writeBatch(db);
-      
-      // 1. Save product
-      const prodRef = doc(db, 'productos', id);
-      batch.set(prodRef, cleanProductData);
+      await setDoc(doc(db, 'productos', id), cleanProductData);
 
-      // 2. Save dynamic URLs
-      for (const chainName of Object.keys(activeUrls)) {
-        const urlData = activeUrls[chainName];
-        if (urlData.url.trim()) {
-          const docId = urlData.id || `${id}_${chainName}_${urlData.marca || 'Generico'}`.replace(/[\s/\\]+/g, '_');
-          const compRef = doc(db, 'productos_competencia', docId);
-          batch.set(compRef, {
-            id_producto_propio: id,
-            cadena: chainName,
-            tipo: urlData.tipo || 'alternativa',
-            marca: (urlData.marca || data.nombre).trim(),
-            url: urlData.url.trim(),
-            activo: true,
-          }, { merge: true });
-        } else if (urlData.id) {
-          // If the URL was emptied, delete the existing record from Firestore
-          const compRef = doc(db, 'productos_competencia', urlData.id);
-          batch.delete(compRef);
-        }
-      }
-
-      await batch.commit();
-
-      addToast(isNew ? 'Producto y enlaces creados con éxito' : 'Producto actualizado con éxito', 'success');
+      addToast(isNew ? 'Producto creado con éxito' : 'Producto actualizado con éxito', 'success');
       setEditing(null);
       await cargar();
     } catch (err) {
@@ -605,7 +583,14 @@ export default function Productos() {
                       </td>
                       <td className="px-6 py-4">
                         <div className="text-on-surface font-semibold">{p.concentracion || '—'}</div>
-                        <div className="text-xs text-on-surface-variant font-mono mt-0.5">{p.tamano || '—'}</div>
+                        <div className="text-xs text-on-surface-variant font-mono mt-0.5 flex items-center gap-1.5">
+                          <span>{p.tamano || '—'}</span>
+                          {parseUnidosisCount(p.tamano || p.presentacion, p.nombre, p.unidosis) > 1 && (
+                            <span className="px-1.5 py-0.2 text-[10px] bg-sky-50 text-sky-700 border border-sky-200 rounded font-bold" title="Unidades/Tabletas por empaque para cálculo unidosis">
+                              {parseUnidosisCount(p.tamano || p.presentacion, p.nombre, p.unidosis)}u
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4">
                         <span className={`px-2.5 py-0.5 text-[10px] rounded font-mono font-bold tracking-wider ${
@@ -789,7 +774,7 @@ export default function Productos() {
   );
 }
 
-function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual, onClose }) {
+function ProductoModal({ producto, sugerirId, onSave, onClose }) {
   const isNew = !producto;
   const [form, setForm] = useState({
     id_interno: producto?.id_interno || sugerirId(),
@@ -798,6 +783,7 @@ function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual
     principio_activo: producto?.principio_activo || '',
     concentracion: producto?.concentracion || '',
     tamano: producto?.tamano || '',
+    unidosis: producto?.unidosis || '',
     presentacion: producto?.presentacion || '',
     categoria: producto?.categoria || '',
     market_type: producto?.market_type || 'GENERICO',
@@ -805,42 +791,16 @@ function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual
     activo: producto?.activo ?? true,
   });
 
-  const initialUrls = useMemo(() => {
-    const urls = {};
-    cadenas.forEach(c => {
-      const existing = competenciaActual.find(
-        pc => pc.id_producto_propio === (producto?.id_interno || '') && pc.cadena === c.nombre
-      );
-      urls[c.nombre] = {
-        id: existing?.id || null,
-        url: existing?.url || '',
-        marca: existing?.marca || '',
-        tipo: existing?.tipo || 'alternativa',
-      };
-    });
-    return urls;
-  }, [cadenas, competenciaActual, producto]);
-
-  const [activeUrls, setActiveUrls] = useState(initialUrls);
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
-    await onSave(form, isNew, activeUrls);
+    await onSave(form, isNew);
     setSaving(false);
   };
 
   const handleChange = (key, value) => setForm(f => ({ ...f, [key]: value }));
-  const handleUrlChange = (chainName, field, value) => {
-    setActiveUrls(prev => ({
-      ...prev,
-      [chainName]: {
-        ...prev[chainName],
-        [field]: value,
-      }
-    }));
-  };
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 animate-fade-in" onClick={onClose}>
@@ -923,47 +883,6 @@ function ProductoModal({ producto, sugerirId, onSave, cadenas, competenciaActual
                 <option value="OTC">OTC</option>
               </select>
             </Field>
-          </div>
-
-          {/* Dynamic Competition URL Fields */}
-          <div className="border-t border-outline-variant pt-5 space-y-4">
-            <h3 className="text-md font-display font-extrabold text-primary flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-base">link</span>
-              Enlaces de Competencia por Cadena
-              <span className="text-xs font-mono font-normal text-on-surface-variant">(Se monitorearán automáticamente)</span>
-            </h3>
-
-            {cadenas.length === 0 ? (
-              <p className="text-xs text-on-surface-variant italic">No hay cadenas de farmacias registradas en el sistema. Agrégalas en la sección "Cadenas".</p>
-            ) : (
-              <div className="space-y-4 bg-surface-low p-4 rounded-2xl border border-outline-variant">
-                {cadenas.map(c => {
-                  const data = activeUrls[c.nombre] || { url: '', marca: '', tipo: 'alternativa' };
-                  return (
-                    <div key={c.nombre} className="grid grid-cols-1 md:grid-cols-12 gap-3 pb-3 border-b border-outline-variant last:border-0 last:pb-0">
-                      <div className="md:col-span-3 flex flex-col justify-center">
-                        <span className="text-sm font-bold text-primary">{c.nombre}</span>
-                        <span className="text-xs text-on-surface-variant font-mono">{c.website ? new URL(c.website).hostname : ''}</span>
-                      </div>
-                      
-                      <div className="md:col-span-6">
-                        <input type="url" value={data.url}
-                          onChange={e => handleUrlChange(c.nombre, 'url', e.target.value)}
-                          placeholder={`https://www.${c.nombre.toLowerCase()}.com/producto/...`}
-                          className="w-full px-3 py-1.5 border border-outline-variant rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary" />
-                      </div>
-
-                      <div className="md:col-span-3">
-                        <input type="text" value={data.marca}
-                          onChange={e => handleUrlChange(c.nombre, 'marca', e.target.value)}
-                          placeholder="Marca o Variante"
-                          className="w-full px-3 py-1.5 border border-outline-variant rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-primary/25 focus:border-primary" />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
           </div>
 
           <div className="flex justify-between items-center pt-4 border-t border-outline-variant">

@@ -2,6 +2,8 @@ import { useEffect, useState, useMemo } from 'react';
 import { collection, query, where, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from './ConfirmModal';
+import { parseUnidosisCount } from '../utils/unidosisUtils';
+import { useData } from '../context/DataContext';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend
 } from 'recharts';
@@ -30,12 +32,15 @@ function InfoTooltip({ text, align = 'center' }) {
   );
 }
 
-function CustomTooltip({ active, payload, label, propios, labMap, currency }) {
+function CustomTooltip({ active, payload, label, propios, labMap, currency, analisisMode }) {
   if (active && payload && payload.length) {
     return (
       <div className="bg-white border border-[#e1e2ec] p-3 rounded-2xl shadow-xl space-y-2 max-w-sm text-xs font-sans">
-        <p className="font-bold text-[#040d53] font-mono border-b border-[#e1e2ec] pb-1">
-          Fecha: {label ? label.split('-').reverse().join('/') : ''}
+        <p className="font-bold text-[#040d53] font-mono border-b border-[#e1e2ec] pb-1 flex justify-between items-center">
+          <span>Fecha: {label ? label.split('-').reverse().join('/') : ''}</span>
+          {analisisMode === 'unidosis' && (
+            <span className="text-[10px] text-sky-700 bg-sky-50 border border-sky-200 px-1.5 py-0.5 rounded font-bold">Por unidosis</span>
+          )}
         </p>
         <div className="space-y-1.5 max-h-48 overflow-y-auto">
           {payload.map((pld) => {
@@ -57,7 +62,7 @@ function CustomTooltip({ active, payload, label, propios, labMap, currency }) {
                   )}
                 </div>
                 <span className={`font-mono font-bold ${isPropio ? 'text-[#2e7d32]' : isPromedio ? 'text-[#ea580c]' : 'text-[#040d53]'}`}>
-                  {currency === 'usd' ? '$' : 'Bs '}{pld.value?.toFixed(2)}
+                  {currency === 'usd' ? '$' : 'Bs '}{pld.value?.toFixed(2)}{analisisMode === 'unidosis' ? '/u' : ''}
                 </span>
               </div>
             );
@@ -69,26 +74,97 @@ function CustomTooltip({ active, payload, label, propios, labMap, currency }) {
   return null;
 }
 
-export default function ProductDetailModal({ producto, competencia, currency, bcvRate, onClose, initialPriceMode = 'descuento' }) {
+export default function ProductDetailModal({ producto, competencia, currency, bcvRate, onClose, initialPriceMode = 'descuento', initialAnalisisMode = 'empaque' }) {
+  const { productos = [], productosCompetencia = [] } = useData() || {};
+
+  const [activeProduct, setActiveProduct] = useState(producto);
+  const [activeCompetencia, setActiveCompetencia] = useState(competencia);
+
+  useEffect(() => {
+    setActiveProduct(producto);
+  }, [producto]);
+
+  useEffect(() => {
+    setActiveCompetencia(competencia);
+  }, [competencia]);
+
   const [historico, setHistorico] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [priceMode, setPriceMode] = useState(initialPriceMode);
+  const [analisisMode, setAnalisisMode] = useState(initialAnalisisMode);
   const [modalCurrency, setModalCurrency] = useState(currency || 'usd');
   const [chartViewType, setChartViewType] = useState('individual'); // 'individual' or 'chainAverage'
+
+  // Dropdown selector states
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('Todas');
 
   // Filters inside modal
   const [filterRelacion, setFilterRelacion] = useState('todos'); // 'todos', 'propio', 'competencia'
   const [filterCadena, setFilterCadena] = useState('todas'); // 'todas', or specific chain name
+
+  const handleSelectProduct = (newProd) => {
+    setActiveProduct(newProd);
+    if (productosCompetencia && productosCompetencia.length) {
+      const compItems = productosCompetencia.filter(
+        pc => pc.id_producto_propio === newProd.id_interno && pc.activo
+      );
+      setActiveCompetencia(compItems);
+    } else {
+      setActiveCompetencia([]);
+    }
+  };
+
+  const categoriesList = useMemo(() => {
+    const set = new Set(productos.map(p => p.categoria).filter(Boolean));
+    return ['Todas', ...Array.from(set).sort()];
+  }, [productos]);
+
+  const filteredProducts = useMemo(() => {
+    const queryStr = searchTerm.toLowerCase().trim();
+    return productos.filter(p => {
+      const matchCategory = categoryFilter === 'Todas' || p.categoria === categoryFilter;
+      if (!matchCategory) return false;
+      if (!queryStr) return true;
+      
+      const name = (p.nombre || '').toLowerCase();
+      const code = (p.id_interno || '').toLowerCase();
+      const pa = (p.principio_activo || '').toLowerCase();
+      const cat = (p.categoria || '').toLowerCase();
+      const pres = (p.presentacion || '').toLowerCase();
+      
+      return name.includes(queryStr) || code.includes(queryStr) || pa.includes(queryStr) || cat.includes(queryStr) || pres.includes(queryStr);
+    });
+  }, [productos, searchTerm, categoryFilter]);
+
+  const ownProductCount = useMemo(() => {
+    return parseUnidosisCount(activeProduct?.tamano || activeProduct?.presentacion, activeProduct?.nombre, activeProduct?.unidosis);
+  }, [activeProduct]);
+
+  const competenciaWithUnidosis = useMemo(() => {
+    return activeCompetencia.map(pc => {
+      const count = parseUnidosisCount(pc.tamano, pc.marca, pc.unidosis) || ownProductCount;
+      const factor = analisisMode === 'unidosis' ? Math.max(count, 1) : 1;
+      return {
+        ...pc,
+        unidosisCount: count,
+        factor,
+        adjustedFullBs: pc.ultimo_precio_full_bs ? pc.ultimo_precio_full_bs / factor : null,
+        adjustedDescBs: pc.ultimo_precio_desc_bs ? pc.ultimo_precio_desc_bs / factor : null,
+      };
+    });
+  }, [activeCompetencia, ownProductCount, analisisMode]);
 
   const handleClearHistory = async () => {
     setClearing(true);
     try {
       const q = query(
         collection(db, 'historico_precios'),
-        where('id_producto_propio', '==', producto.id_interno)
+        where('id_producto_propio', '==', activeProduct.id_interno)
       );
       const snap = await getDocs(q);
       const docs = snap.docs;
@@ -110,10 +186,11 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
       try {
         const q = query(
           collection(db, 'historico_precios'),
-          where('id_producto_propio', '==', producto.id_interno)
+          where('id_producto_propio', '==', activeProduct.id_interno)
         );
         const snap = await getDocs(q);
         const docs = snap.docs.map(d => ({
@@ -128,7 +205,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
       }
       setLoading(false);
     })();
-  }, [producto.id_interno]);
+  }, [activeProduct.id_interno]);
 
   // Pivot: convertir historico en serie por marca-cadena o por promedio de cadena, agrupado por dia.
   const chartData = (() => {
@@ -157,10 +234,14 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
         propios.add(marca);
       }
 
-      const precioBs = priceMode === 'descuento'
+      const rawPrecioBs = priceMode === 'descuento'
         ? (h.precio_desc_bs || h.precio_full_bs)
         : h.precio_full_bs;
-      if (!precioBs) continue;
+      if (!rawPrecioBs) continue;
+
+      const hCount = parseUnidosisCount(h.tamano, h.marca, h.unidosis) || ownProductCount;
+      const hFactor = analisisMode === 'unidosis' ? Math.max(hCount, 1) : 1;
+      const precioBs = rawPrecioBs / hFactor;
       const precio = modalCurrency === 'usd' && bcvRate ? precioBs / bcvRate : precioBs;
 
       // 1. Individual Brand structure
@@ -222,48 +303,48 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
   // Map each competitor/product key to its laboratory
   const labMap = useMemo(() => {
     const map = new Map();
-    for (const c of competencia) {
+    for (const c of competenciaWithUnidosis) {
       const key = `${c.marca} (${c.cadena})`;
       map.set(key, c.laboratorio || '');
     }
     return map;
-  }, [competencia]);
+  }, [competenciaWithUnidosis]);
 
   // Available chains for dropdown filter
   const cadenasDisponibles = useMemo(() => {
-    const set = new Set(competencia.map(c => c.cadena));
+    const set = new Set(competenciaWithUnidosis.map(c => c.cadena));
     return Array.from(set).sort();
-  }, [competencia]);
+  }, [competenciaWithUnidosis]);
 
   // Filtered competition list for table
   const competenciaFiltrada = useMemo(() => {
-    return competencia.filter(pc => {
+    return competenciaWithUnidosis.filter(pc => {
       const matchRelacion = filterRelacion === 'todos' || 
         (filterRelacion === 'propio' && pc.tipo === 'propio') || 
         (filterRelacion === 'competencia' && pc.tipo !== 'propio');
       const matchCadena = filterCadena === 'todas' || pc.cadena === filterCadena;
       return matchRelacion && matchCadena;
     });
-  }, [competencia, filterRelacion, filterCadena]);
+  }, [competenciaWithUnidosis, filterRelacion, filterCadena]);
 
   // Minimum full price and minimum discount price for highlights in table
-  const validFullPrices = competencia
-    .map(c => c.ultimo_precio_full_bs)
+  const validFullPrices = competenciaWithUnidosis
+    .map(c => c.adjustedFullBs)
     .filter(p => p && p > 0);
   const minFullPriceBs = validFullPrices.length > 0 ? Math.min(...validFullPrices) : null;
 
-  const validDescPrices = competencia
-    .map(c => c.ultimo_precio_desc_bs)
+  const validDescPrices = competenciaWithUnidosis
+    .map(c => c.adjustedDescBs)
     .filter(p => p && p > 0);
   const minDescPriceBs = validDescPrices.length > 0 ? Math.min(...validDescPrices) : null;
 
   // Calculations for smart indicators (always calculated on full active set for robust comparisons)
-  const validPrices = competencia
+  const validPrices = competenciaWithUnidosis
     .map(c => {
       const pBs = priceMode === 'descuento'
-        ? (c.ultimo_precio_desc_bs || c.ultimo_precio_full_bs)
-        : c.ultimo_precio_full_bs;
-      return pBs ? { cadena: c.cadena, marca: c.marca, priceBs: pBs, tipo: c.tipo } : null;
+        ? (c.adjustedDescBs || c.adjustedFullBs)
+        : c.adjustedFullBs;
+      return pBs ? { cadena: c.cadena, marca: c.marca, priceBs: pBs, tipo: c.tipo, count: c.unidosisCount } : null;
     })
     .filter(Boolean);
 
@@ -275,11 +356,11 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
     ? validPrices.reduce((sum, item) => sum + item.priceBs, 0) / validPrices.length
     : null;
 
-  const propioItem = competencia.find(c => c.tipo === 'propio');
+  const propioItem = competenciaWithUnidosis.find(c => c.tipo === 'propio');
   const propioPriceBs = propioItem 
     ? (priceMode === 'descuento' 
-        ? (propioItem.ultimo_precio_desc_bs || propioItem.ultimo_precio_full_bs)
-        : propioItem.ultimo_precio_full_bs)
+        ? (propioItem.adjustedDescBs || propioItem.adjustedFullBs)
+        : propioItem.adjustedFullBs)
     : null;
 
   const diffMinBs = (propioPriceBs !== null && minPriceItem !== null) ? propioPriceBs - minPriceItem.priceBs : null;
@@ -295,38 +376,228 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
     const competitorColors = ['#040d53', '#ba1a1a', '#004ecb', '#0891b2', '#db2777', '#8b5cf6', '#ea580c', '#3b82f6'];
     return competitorColors[index % competitorColors.length];
   };
-
   const formatHeaderPrice = (priceBs) => {
     if (priceBs == null) return '—';
+    const suffix = analisisMode === 'unidosis' ? '/u' : '';
     if (modalCurrency === 'usd') {
       if (!bcvRate) return '—';
-      return '$' + (priceBs / bcvRate).toFixed(2);
+      return '$' + (priceBs / bcvRate).toFixed(2) + suffix;
     }
-    return 'Bs ' + priceBs.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return 'Bs ' + priceBs.toLocaleString('es-VE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + suffix;
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4 animate-fade-in text-[#1c1b1f]" onClick={onClose}>
-      <div
-        className="bg-white rounded-[32px] shadow-xl max-w-4xl w-full max-h-[92vh] flex flex-col border border-[#e1e2ec]"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header Block */}
-        <div className="px-6 py-5 border-b border-[#e1e2ec] flex items-start justify-between">
-          <div>
-            <h2 className="text-xl font-display font-extrabold text-[#040d53] tracking-tight">{producto.nombre}</h2>
-            <p className="text-xs text-[#464650] font-sans mt-0.5">
-              {producto.principio_activo || '—'} {producto.concentracion || '—'} · {producto.presentacion || '—'} · {producto.laboratorio || '—'}
-            </p>
-          </div>
-          <button onClick={onClose} className="text-[#464650] hover:text-black text-2xl leading-none">×</button>
+    <div className="fixed inset-0 bg-[#f8f9fa] z-50 flex flex-col overflow-hidden animate-fade-in text-[#1c1b1f]">
+      {/* Header Navigation Bar */}
+      <div className="bg-white border-b border-[#e1e2ec] px-4 md:px-8 py-3 flex items-center justify-between gap-4 shrink-0 shadow-sm z-30">
+        {/* Left: Regresar / Volver button */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onClose}
+            className="flex items-center gap-2 px-3.5 py-2 bg-white border border-[#e1e2ec] hover:bg-[#f3f4f9] text-[#040d53] text-xs font-bold rounded-xl transition-all shadow-xs group"
+            title="Regresar a la pantalla principal"
+          >
+            <span className="material-symbols-outlined text-base group-hover:-translate-x-0.5 transition-transform">
+              arrow_back
+            </span>
+            <span className="hidden sm:inline">Volver</span>
+          </button>
+          <div className="h-6 w-[1px] bg-[#e1e2ec] hidden sm:block"></div>
         </div>
 
-        {/* Content Area */}
-        <div className="p-6 space-y-6 overflow-y-auto">
+        {/* Center: Searchable Product Selector Dropdown */}
+        <div className="flex-1 max-w-2xl relative">
+          <button
+            onClick={() => setDropdownOpen(prev => !prev)}
+            className="w-full bg-[#f3f4f9] hover:bg-[#e8eaef] border border-[#e1e2ec] rounded-2xl px-3.5 py-2 flex items-center justify-between transition-all shadow-xs text-left group"
+          >
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <div className="w-8 h-8 rounded-xl bg-[#040d53] text-white flex items-center justify-center font-bold text-xs shrink-0 shadow-xs font-mono">
+                {activeProduct.id_interno || 'P'}
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-extrabold text-sm text-[#040d53] truncate">{activeProduct.nombre}</span>
+                  {activeProduct.categoria && (
+                    <span className="hidden sm:inline-block px-2 py-0.5 bg-[#e1e2ec] text-[#040d53] text-[10px] font-bold rounded-md font-mono shrink-0">
+                      {activeProduct.categoria}
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-[#464650] truncate leading-tight">
+                  {activeProduct.principio_activo || 'Sin principio activo'} · {activeProduct.concentracion || ''} {activeProduct.presentacion || ''}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 text-[#040d53] font-bold text-xs shrink-0 pl-2">
+              <span className="hidden md:inline text-[11px] font-mono text-[#464650]">Cambiar producto</span>
+              <span className="material-symbols-outlined text-lg group-hover:translate-y-0.5 transition-transform">
+                {dropdownOpen ? 'expand_less' : 'unfold_more'}
+              </span>
+            </div>
+          </button>
+
+          {/* Searchable Dropdown Popover */}
+          {dropdownOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setDropdownOpen(false)}></div>
+              <div className="absolute top-full left-0 right-0 mt-2 bg-white rounded-2xl border border-[#e1e2ec] shadow-2xl z-40 p-3 space-y-2.5 animate-fade-in max-w-2xl w-full">
+                {/* Search Bar */}
+                <div className="relative flex items-center">
+                  <span className="material-symbols-outlined absolute left-3 text-lg text-[#464650]">search</span>
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Buscar por nombre, id, principio activo o categoría..."
+                    className="w-full pl-9 pr-8 py-2 bg-[#f3f4f9] border border-[#e1e2ec] focus:border-[#040d53] focus:bg-white rounded-xl text-xs font-medium text-[#1c1b1f] placeholder-[#464650]/60 outline-none transition-all"
+                    autoFocus
+                  />
+                  {searchTerm && (
+                    <button
+                      onClick={() => setSearchTerm('')}
+                      className="absolute right-2.5 text-[#464650] hover:text-black"
+                    >
+                      <span className="material-symbols-outlined text-sm">close</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Categories Horizontal Scroll */}
+                {categoriesList.length > 2 && (
+                  <div className="flex items-center gap-1 overflow-x-auto pb-1 no-scrollbar text-[11px]">
+                    {categoriesList.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => setCategoryFilter(cat)}
+                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-bold whitespace-nowrap transition-all ${
+                          categoryFilter === cat
+                            ? 'bg-[#040d53] text-white shadow-xs'
+                            : 'bg-[#f3f4f9] text-[#464650] hover:bg-[#e1e2ec]'
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Counter */}
+                <div className="flex items-center justify-between text-[11px] font-mono text-[#464650] px-1 border-b border-[#f3f4f9] pb-1.5">
+                  <span>{filteredProducts.length} productos coincidentes</span>
+                  <span>{productos.length} total</span>
+                </div>
+
+                {/* Product List */}
+                <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                  {filteredProducts.length === 0 ? (
+                    <div className="p-4 text-center text-xs text-[#464650] italic">
+                      No se encontraron productos que coincidan con "{searchTerm}"
+                    </div>
+                  ) : (
+                    filteredProducts.map(p => {
+                      const isSelected = p.id_interno === activeProduct.id_interno;
+                      const compCount = productosCompetencia.filter(pc => pc.id_producto_propio === p.id_interno && pc.activo).length;
+
+                      return (
+                        <button
+                          key={p.id_interno || p.id}
+                          onClick={() => {
+                            handleSelectProduct(p);
+                            setDropdownOpen(false);
+                          }}
+                          className={`w-full text-left p-2.5 rounded-xl transition-all flex items-center justify-between gap-3 ${
+                            isSelected
+                              ? 'bg-[#040d53]/5 border border-[#040d53]/20 text-[#040d53]'
+                              : 'hover:bg-[#f3f4f9] border border-transparent text-[#1c1b1f]'
+                          }`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-extrabold text-xs truncate">{p.nombre}</span>
+                              <span className="px-1.5 py-0.2 bg-[#f3f4f9] text-[#040d53] text-[9.5px] font-mono font-bold rounded">
+                                {p.id_interno}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-[#464650] truncate mt-0.5">
+                              {p.principio_activo || '—'} {p.concentracion || ''} · {p.presentacion || ''}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-[10px] font-mono font-bold text-sky-700 bg-sky-50 border border-sky-200 px-2 py-0.5 rounded-full">
+                              {compCount} comp.
+                            </span>
+                            {isSelected && (
+                              <span className="material-symbols-outlined text-base text-[#040d53] font-bold">check_circle</span>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Right Actions */}
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowClearConfirm(true)}
+            disabled={clearing || historico.length === 0}
+            className="px-3 py-2 border border-red-200 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl text-xs font-bold transition-all disabled:opacity-40 flex items-center gap-1.5 shadow-xs"
+            title="Eliminar historial acumulado para este producto"
+          >
+            <span className="material-symbols-outlined text-base">delete_sweep</span>
+            <span className="hidden lg:inline">Limpiar Historial</span>
+          </button>
+          <button
+            onClick={onClose}
+            className="p-2 text-[#464650] hover:text-black hover:bg-[#e1e2ec]/50 rounded-xl transition-colors"
+            title="Cerrar vista"
+          >
+            <span className="material-symbols-outlined text-2xl">close</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Main Content Scrollable Container */}
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-7xl mx-auto w-full space-y-6">
           {/* Price and Currency Switch Controls */}
           <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-[#f3f4f9] p-4 rounded-2xl border border-[#e1e2ec] animate-fade-in">
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 flex-1">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 flex-1">
+              {/* Unidosis vs Empaque Switcher */}
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5 text-[#464650]">
+                  <span className="material-symbols-outlined text-[16px]">medication</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Modo:</span>
+                </div>
+                <div className="bg-[#e1e2ec] p-1 rounded-xl flex gap-1 h-[34px] items-center">
+                  <button
+                    onClick={() => setAnalisisMode('empaque')}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1 ${
+                      analisisMode === 'empaque' 
+                        ? 'bg-[#040d53] text-white shadow-sm' 
+                        : 'text-[#464650] hover:bg-white/50'
+                    }`}
+                  >
+                    Empaque
+                  </button>
+                  <button
+                    onClick={() => setAnalisisMode('unidosis')}
+                    className={`flex-1 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1 ${
+                      analisisMode === 'unidosis' 
+                        ? 'bg-[#040d53] text-white shadow-sm' 
+                        : 'text-[#464650] hover:bg-white/50'
+                    }`}
+                    title="Analizar precios normalizados por 1 unidad/tableta/dosis"
+                  >
+                    Unidosis
+                  </button>
+                </div>
+              </div>
+
               {/* Modo de Comparacion Selector */}
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-1.5 text-[#464650]">
@@ -361,7 +632,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-1.5 text-[#464650]">
                   <span className="material-symbols-outlined text-[16px]">monetization_on</span>
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Moneda en Modal:</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Moneda:</span>
                 </div>
                 <div className="bg-[#e1e2ec] p-1 rounded-xl flex gap-1 h-[34px] items-center">
                   <button
@@ -391,7 +662,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-1.5 text-[#464650]">
                   <span className="material-symbols-outlined text-[16px]">groups</span>
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Relación de Marca:</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Relación Marca:</span>
                 </div>
                 <select
                   value={filterRelacion}
@@ -408,7 +679,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               <div className="flex flex-col gap-1.5">
                 <div className="flex items-center gap-1.5 text-[#464650]">
                   <span className="material-symbols-outlined text-[16px]">storefront</span>
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Filtrar por Cadena:</span>
+                  <span className="text-[10px] font-extrabold uppercase tracking-wider font-mono">Cadena:</span>
                 </div>
                 <select
                   value={filterCadena}
@@ -438,7 +709,9 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               {/* Mas Barato Card */}
               <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1 relative">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Más Barato (Mercado)</span>
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">
+                    Más Barato {analisisMode === 'unidosis' ? '(Unidosis)' : '(Mercado)'}
+                  </span>
                   <InfoTooltip text="El precio mínimo detectado entre todos tus competidores en el mercado para el modo seleccionado (con descuento o de lista)." align="left" />
                 </div>
                 <div className="text-lg font-display font-extrabold text-[#70C145]">
@@ -452,7 +725,9 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               {/* Mi Precio Card */}
               <div className="bg-[#e8f5e9]/30 border border-[#a5d6a7]/50 p-4 rounded-2xl shadow-sm space-y-1 relative">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#2e7d32]">Mi Precio (Marca Propia)</span>
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#2e7d32]">
+                    Mi Precio {analisisMode === 'unidosis' ? '(Unidosis)' : '(Marca Propia)'}
+                  </span>
                   <InfoTooltip text="El precio actual de tu producto marca propia. Se muestra en verde para resaltar que es la referencia de tu marca." align="left" />
                 </div>
                 <div className="text-lg font-display font-extrabold text-[#2e7d32]">
@@ -486,7 +761,9 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
               {/* Precio Promedio Card */}
               <div className="bg-white border border-[#e1e2ec] p-4 rounded-2xl shadow-sm space-y-1 relative">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">Precio Promedio (Mercado)</span>
+                  <span className="text-[10px] uppercase font-mono font-bold tracking-wider text-[#464650]">
+                    Promedio {analisisMode === 'unidosis' ? '(Unidosis)' : '(Mercado)'}
+                  </span>
                   <InfoTooltip text="El precio promedio aritmético calculado entre todos los competidores vigentes en el mercado." align="right" />
                 </div>
                 <div className="text-lg font-display font-extrabold text-[#040d53]">
@@ -513,7 +790,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <h3 className="text-xs font-bold text-[#040d53] uppercase font-mono tracking-wider flex items-center gap-1.5">
                 <span className="material-symbols-outlined text-sm">payments</span>
-                Precios Actuales por Cadena Farmacéutica
+                Precios Actuales por Cadena Farmacéutica {analisisMode === 'unidosis' ? '(Por Unidosis / Dosis)' : ''}
               </h3>
             </div>
 
@@ -524,8 +801,12 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                     <th className="text-left px-5 py-3.5">Cadena</th>
                     <th className="text-left px-5 py-3.5">Marca / Variante</th>
                     <th className="text-left px-5 py-3.5">Relación</th>
-                    <th className="text-right px-5 py-3.5">Precio de Lista</th>
-                    <th className="text-right px-5 py-3.5">Precio con Descuento</th>
+                    <th className="text-right px-5 py-3.5">
+                      Precio Lista {analisisMode === 'unidosis' ? '(/u)' : ''}
+                    </th>
+                    <th className="text-right px-5 py-3.5">
+                      Precio Oferta {analisisMode === 'unidosis' ? '(/u)' : ''}
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#e1e2ec]">
@@ -537,8 +818,8 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                     </tr>
                   ) : (
                     competenciaFiltrada.map(pc => {
-                      const isCheapestFull = pc.ultimo_precio_full_bs && pc.ultimo_precio_full_bs === minFullPriceBs;
-                      const isCheapestDesc = pc.ultimo_precio_desc_bs && pc.ultimo_precio_desc_bs === minDescPriceBs;
+                      const isCheapestFull = pc.adjustedFullBs && pc.adjustedFullBs === minFullPriceBs;
+                      const isCheapestDesc = pc.adjustedDescBs && pc.adjustedDescBs === minDescPriceBs;
                       
                       return (
                         <tr key={pc.id} className="hover:bg-[#f8f9fa] transition-colors">
@@ -553,12 +834,24 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                                 title="Ver enlace de origen del producto ↗"
                               >
                                 <span className="font-semibold">{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</span>
+                                {pc.unidosisCount > 0 && (
+                                  <span className="px-1.5 py-0.2 text-[10px] bg-sky-50 text-sky-700 border border-sky-200 rounded font-bold ml-1">
+                                    {pc.unidosisCount}u
+                                  </span>
+                                )}
                                 <span className="material-symbols-outlined text-[13px] text-primary/70 group-hover:text-[#040d53] transition-colors leading-none">
                                   open_in_new
                                 </span>
                               </a>
                             ) : (
-                              <div>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</div>
+                              <div className="flex items-center gap-1">
+                                <span>{pc.marca} {pc.concentracion || ''} {pc.tamano || ''}</span>
+                                {pc.unidosisCount > 0 && (
+                                  <span className="px-1.5 py-0.2 text-[10px] bg-sky-50 text-sky-700 border border-sky-200 rounded font-bold">
+                                    {pc.unidosisCount}u
+                                  </span>
+                                )}
+                              </div>
                             )}
                             {pc.laboratorio && (
                               <div className="text-[10px] text-[#464650] font-normal mt-0.5">Lab: {pc.laboratorio}</div>
@@ -574,7 +867,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                           <td className="px-5 py-3 text-right font-mono font-bold text-[#464650]">
                             <div className="flex flex-col items-end justify-center">
                               <span className={isCheapestFull ? 'text-[#2e7d32] font-extrabold' : ''}>
-                                {formatHeaderPrice(pc.ultimo_precio_full_bs)}
+                                {formatHeaderPrice(pc.adjustedFullBs)}
                               </span>
                               {isCheapestFull && (
                                 <span className="text-[9px] bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7] font-bold px-1.5 py-0.5 rounded mt-0.5 uppercase tracking-wide">
@@ -586,7 +879,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                           <td className="px-5 py-3 text-right font-mono font-extrabold text-[#040d53]">
                             <div className="flex flex-col items-end justify-center">
                               <span className={isCheapestDesc ? 'text-[#2e7d32] font-extrabold' : ''}>
-                                {formatHeaderPrice(pc.ultimo_precio_desc_bs)}
+                                {formatHeaderPrice(pc.adjustedDescBs)}
                               </span>
                               {isCheapestDesc && (
                                 <span className="text-[9px] bg-[#e8f5e9] text-[#2e7d32] border border-[#a5d6a7] font-bold px-1.5 py-0.5 rounded mt-0.5 uppercase tracking-wide">
@@ -694,6 +987,7 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
                           } 
                           labMap={chartViewType === 'individual' ? Object.fromEntries(labMap) : {}} 
                           currency={modalCurrency} 
+                          analisisMode={analisisMode}
                         />
                       } />
                       <Legend wrapperStyle={{ fontSize: 11, marginTop: 10 }} />
@@ -753,26 +1047,17 @@ export default function ProductDetailModal({ producto, competencia, currency, bc
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-[#e1e2ec] flex justify-end">
-          <button onClick={onClose}
-            className="px-5 py-2 bg-[#f3f4f9] hover:bg-[#e1e2ec] border border-[#c6c5d2] rounded-full text-xs font-bold text-[#464650] transition-all">
-            Cerrar Modal
-          </button>
-        </div>
-
-        {/* Clear Product History Dialog */}
-        <ConfirmModal
-          isOpen={showClearConfirm}
-          title="¿Borrar Historial del Producto?"
-          message={`¿Estás seguro de que deseas eliminar TODOS los registros de precios históricos para "${producto.nombre}"?\n\nEsta acción no afectará la información actual del producto ni de sus competidores, pero vaciará el gráfico de tendencias.`}
-          confirmText={clearing ? 'Borrando...' : 'Borrar'}
-          cancelText="Cancelar"
-          isDanger={true}
-          onConfirm={handleClearHistory}
-          onCancel={() => setShowClearConfirm(false)}
-        />
-      </div>
+      {/* Clear Product History Dialog */}
+      <ConfirmModal
+        isOpen={showClearConfirm}
+        title="¿Borrar Historial del Producto?"
+        message={`¿Estás seguro de que deseas eliminar TODOS los registros de precios históricos para "${activeProduct.nombre}"?\n\nEsta acción no afectará la información actual del producto ni de sus competidores, pero vaciará el gráfico de tendencias.`}
+        confirmText={clearing ? 'Borrando...' : 'Borrar'}
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleClearHistory}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }
