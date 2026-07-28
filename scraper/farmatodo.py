@@ -1,15 +1,18 @@
-# Scraper de Competencia (Farmatodo, Locatel, Farmacias SAAS, etc.) - Version 5 Async
+# Scraper de Competencia (Farmatodo, Locatel, Farmacias SAAS, etc.) - Version 6 Async Multi-Dominio
 #
-# Mejoras respecto a v4:
-# - Procesamiento Asíncrono de alto rendimiento con Playwright Async + asyncio.Semaphore
-# - Entrelazado inteligente (Round-Robin por cadena) para rotar los destinos y evitar
-#   bloqueos de IP/Rate Limit al no hacer peticiones consecutivas a la misma tienda.
-# - Bloqueo de recursos pesados (imágenes, fuentes, CSS, analítica) para reducir
-#   el consumo de ancho de banda hasta un 80% y maximizar la velocidad.
-# - Extracción optimizada de precios vía JSON estructurado (__NEXT_DATA__ / JSON-LD / Meta)
-#   con fallback resiliente a selectores DOM y heurística de proximidad al H1.
-# - Reintento automático asíncrono para enlaces con fallas temporales y búsqueda
-#   alternativa en Farmatodo para URLs obsoletas o 404.
+# Arquitectura y Mejoras Integradas:
+# 1. Concurrencia Adaptativa por Dominio:
+#    - Límite global (MAX_GLOBAL_CONCURRENCY=12) y límite por dominio (MAX_PER_DOMAIN_CONCURRENCY=3).
+#    - Previene bloqueos HTTP 429 (Too Many Requests) / 500 al distribuir las conexiones.
+# 2. Entrelazado Round-Robin por Cadena:
+#    - Rotación de tiendas (Farmatodo -> Locatel -> SAAS -> Farmatodo) para espaciar
+#      las peticiones de forma natural a 10.000+ productos.
+# 3. Motor de Extracción Universal O(1):
+#    - Compatible con Next.js (__NEXT_DATA__), VTEX (__STATE__ / cm), Schema.org JSON-LD y DOM.
+# 4. Bloqueo Inteligente de Red:
+#    - Cancela recursos pesados (imágenes, fuentes, video, analítica) sin romper estilos/scripts
+#      necesarios para la hidratación React/VTEX.
+# 5. Obtención única de Tasa BCV al inicio para cero redundancia.
 
 import asyncio
 import csv
@@ -20,6 +23,7 @@ import re
 import sys
 import time
 import random
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -28,12 +32,13 @@ PROJECT_ROOT = Path(__file__).parent.parent if "__file__" in globals() else Path
 CSV_PATH = PROJECT_ROOT / "productos_competencia.csv"
 RESULTS_PATH = PROJECT_ROOT / "resultados.json"
 
-# Límite de pestañas concurrentes en el navegador
-MAX_CONCURRENT_PAGES = int(os.environ.get("MAX_CONCURRENT_PAGES", "8"))
+# Configuración de concurrencia adaptativa por dominio para escalar a miles de links
+MAX_GLOBAL_CONCURRENCY = int(os.environ.get("MAX_GLOBAL_CONCURRENCY", "12"))
+MAX_PER_DOMAIN_CONCURRENCY = int(os.environ.get("MAX_PER_DOMAIN_CONCURRENCY", "3"))
 
 
 def read_text_robust(path: Path) -> str:
-    """Lee un archivo local probando diferentes codificaciones."""
+    """Lee un archivo local probando diferentes codificaciones de texto."""
     raw = path.read_bytes()
     for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
         try:
@@ -47,7 +52,7 @@ def parse_price(text: str):
     """Limpia y convierte cadenas de texto numéricas en formato de moneda (Bs)."""
     if not text:
         return None
-    cleaned = text.replace("Bs.", "").replace("Bs", "").strip()
+    cleaned = str(text).replace("Bs.", "").replace("Bs", "").replace("VES", "").strip()
     cleaned = re.sub(r"[^\d.,]", "", cleaned)
     if not cleaned:
         return None
@@ -56,10 +61,10 @@ def parse_price(text: str):
         # Formato venezolano/hispano: punto para miles, coma para decimales
         cleaned = cleaned.replace(".", "").replace(",", ".")
     else:
-        # Si no hay coma, verificar uso de puntos como separador de miles
+        # Formato estándar con punto decimal
         if cleaned.count(".") == 1:
             parts = cleaned.split(".")
-            if len(parts[1]) == 3:  # Un solo punto seguido de 3 dígitos es miles
+            if len(parts[1]) == 3:  # Formato de miles sin decimales
                 cleaned = cleaned.replace(".", "")
         elif cleaned.count(".") > 1:
             cleaned = cleaned.replace(".", "")
@@ -75,7 +80,7 @@ def parse_price_usd(text: str):
     """Extrae montos numéricos limpios etiquetados en divisas USD/Ref."""
     if not text:
         return None
-    cleaned = text.replace("Ref.", "").replace("Ref", "").replace("$", "").replace("USD", "").replace(":", "").strip()
+    cleaned = str(text).replace("Ref.", "").replace("Ref", "").replace("$", "").replace("USD", "").replace(":", "").strip()
     cleaned = re.sub(r"[^\d.,]", "", cleaned)
     if not cleaned:
         return None
@@ -92,17 +97,16 @@ def is_usd_text(text: str) -> bool:
     """Detecta si un texto contiene indicadores de precio en dólares."""
     if not text:
         return False
-    t = text.lower()
+    t = str(text).lower()
     return "ref" in t or "$" in t or "usd" in t or "divisa" in t
 
 
 def fetch_bcv_rate_once() -> float:
     """
     Obtiene la tasa oficial del BCV una sola vez al inicio del programa.
-    Evita llamadas redundantes a Firestore o APIs externas durante la extracción.
+    Evita lecturas innecesarias a Firestore o APIs durante la ejecución masiva.
     """
     print("[BCV] Cargando tasa oficial...", flush=True)
-    # 1. Intentar cargar desde Firestore
     try:
         from firebase_client import get_db
         db = get_db()
@@ -114,9 +118,7 @@ def fetch_bcv_rate_once() -> float:
     except Exception as e:
         print(f"[BCV] Aviso: No se pudo conectar a Firestore para BCV ({e})", flush=True)
 
-    # 2. Fallback a DolarAPI
     try:
-        import urllib.request
         url = "https://ve.dolarapi.com/v1/dolares/oficial"
         req = urllib.request.Request(url, headers={"User-Agent": "TrackFlow/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -124,19 +126,18 @@ def fetch_bcv_rate_once() -> float:
             rate = data.get("promedio") or data.get("price")
             if rate:
                 rate = float(rate)
-                print(f"[BCV] Tasa obtenida desde DolarAPI (backup): Bs {rate:,.2f}", flush=True)
+                print(f"[BCV] Tasa obtenida desde DolarAPI: Bs {rate:,.2f}", flush=True)
                 return rate
     except Exception as e:
         print(f"[BCV] Aviso: Falló DolarAPI ({e})", flush=True)
 
-    # 3. Fallback seguro
     fallback = 44.5
     print(f"[BCV] Usando tasa hardcoded de seguridad: Bs {fallback:,.2f}", flush=True)
     return fallback
 
 
 def cargar_filas_de_firestore():
-    """Lee la lista de productos de competencia desde la colección Firestore."""
+    """Lee productos_competencia desde Firestore."""
     try:
         from firebase_client import get_db
         db = get_db()
@@ -154,22 +155,22 @@ def cargar_filas_de_firestore():
 
 
 def cargar_filas_de_csv():
-    """Fallback: lee productos desde archivo CSV local."""
+    """Fallback local: lee productos desde el archivo CSV."""
     if not CSV_PATH.exists():
         return []
     text = read_text_robust(CSV_PATH)
     sample = text[:2048]
     delim = ";" if sample.count(";") > sample.count(",") else ","
     filas = [row for row in csv.DictReader(io.StringIO(text), delimiter=delim)]
-    print(f"Cargadas {len(filas)} filas desde CSV local (fallback)", flush=True)
+    print(f"Cargadas {len(filas)} filas desde CSV local", flush=True)
     return filas
 
 
-def interleave_filas_por_cadena(filas):
+def interleave_filas_por_cadena(filas: list) -> list:
     """
-    Agrupa las filas por cadena y las entrelaza (round-robin) para rotar las consultas.
-    Esto evita golpear continuamente la misma tienda (e.g. Farmatodo) y distribuye
-    las peticiones entre Farmatodo, Locatel, SAAS, etc., evitando bloqueos por rate limit.
+    Agrupa las filas por dominio/cadena y las entrelaza (Round-Robin).
+    Ejemplo: Farmatodo 1 -> SAAS 1 -> Locatel 1 -> Farmatodo 2 -> SAAS 2...
+    Esto evita golpear repetidamente el mismo servidor y previene HTTP 429 / 500.
     """
     por_cadena = {}
     for f in filas:
@@ -187,25 +188,24 @@ def interleave_filas_por_cadena(filas):
             if i < len(por_cadena[cad]):
                 interleaved.append(por_cadena[cad][i])
 
-    print(f"[Optimizador] Entrelazadas {len(interleaved)} URLs entre {len(cadenas_keys)} cadenas distintas ({', '.join(cadenas_keys)})", flush=True)
+    print(f"[Optimizador] Entrelazadas {len(interleaved)} URLs entre {len(cadenas_keys)} cadenas ({', '.join(cadenas_keys)})", flush=True)
     return interleaved
 
 
 async def block_unnecessary_resources(route):
     """
-    Bloquea imágenes, fuentes, estilos CSS y scripts de rastreo.
-    Reduce hasta un 80% del uso de red y acelera la carga.
+    Bloqueador inteligente de red:
+    Cancela recursos pesados (imágenes, video, fuentes, analíticas) para maximizar la velocidad.
+    Permite CSS/JS necesarios para hidratación VTEX/React.
     """
     req = route.request
     res_type = req.resource_type
     url_lower = req.url.lower()
 
-    # Bloquear recursos multimedia y pesados
-    if res_type in ("image", "media", "font", "websocket", "stylesheet"):
+    if res_type in ("image", "media", "font", "websocket"):
         await route.abort()
         return
 
-    # Bloquear trackers y scripts de analítica
     analytics_keywords = (
         "google-analytics", "analytics", "google-tag-manager", "googletagmanager",
         "facebook", "connect.facebook.net", "hotjar", "sentry", "datadog",
@@ -218,12 +218,137 @@ async def block_unnecessary_resources(route):
     await route.continue_()
 
 
+async def extract_product_data_from_page(page, url: str, bcv_rate: float) -> dict:
+    """
+    Motor universal de extracción de e-commerce.
+    Soporta Next.js (__NEXT_DATA__), VTEX (__STATE__ / commertialOffer)
+    y Schema.org JSON-LD con fallback resiliente al DOM.
+    """
+    return await page.evaluate("""
+        () => {
+            const bodyText = document.body ? document.body.innerText || '' : '';
+            const title = document.title || '';
+
+            // 1. Detectar bloqueos de seguridad anti-bot
+            if (title.includes('Cloudflare') || title.includes('Just a moment') || 
+                bodyText.includes('Checking your browser') || bodyText.includes('Access Denied')) {
+                return { error: "Bloqueo temporal de seguridad (Cloudflare)." };
+            }
+
+            // 2. Detectar páginas no encontradas o agotadas
+            if (title.includes('404') || bodyText.includes('Producto no disponible') || 
+                bodyText.includes('No pudimos encontrar') || bodyText.includes('no encontrado')) {
+                return { error: "Producto no disponible o enlace roto (404 / Agotado)." };
+            }
+
+            let nombre = null;
+            let active_price = null;
+            let original_price = null;
+
+            // 3. ESTRATEGIA A: Next.js __NEXT_DATA__ (Farmatodo)
+            const nextDataEl = document.querySelector('script#__NEXT_DATA__');
+            if (nextDataEl) {
+                try {
+                    const json = JSON.parse(nextDataEl.textContent);
+                    const pageProps = json?.props?.pageProps;
+                    const product = pageProps?.product || pageProps?.initialState?.product?.productDetail;
+                    if (product) {
+                        nombre = product.name || product.description;
+                        if (product.price) active_price = parseFloat(product.price);
+                        if (product.originalPrice) original_price = parseFloat(product.originalPrice);
+                        if (product.priceOffer) {
+                            active_price = parseFloat(product.priceOffer);
+                            original_price = parseFloat(product.price);
+                        }
+                    }
+                } catch(e) {}
+            }
+
+            // 4. ESTRATEGIA B: VTEX Data Layer / State (Locatel, Farmacias SAAS)
+            if (!active_price && window.__STATE__) {
+                try {
+                    const state = window.__STATE__;
+                    for (const k in state) {
+                        if (k.includes('Product:') || k.includes('Item:')) {
+                            const item = state[k];
+                            if (!nombre && item.productName) nombre = item.productName;
+                            if (item.sellers && item.sellers[0]) {
+                                const comm = item.sellers[0].commertialOffer;
+                                if (comm && comm.Price) {
+                                    active_price = parseFloat(comm.Price);
+                                    if (comm.ListPrice && comm.ListPrice > comm.Price) {
+                                        original_price = parseFloat(comm.ListPrice);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch(e) {}
+            }
+
+            // 5. ESTRATEGIA C: JSON-LD (Schema.org Universal)
+            if (!active_price) {
+                const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                for (const script of jsonLdScripts) {
+                    try {
+                        const parsed = JSON.parse(script.textContent || '');
+                        const items = Array.isArray(parsed) ? parsed : [parsed];
+                        for (const item of items) {
+                            if (item['@type'] === 'Product' || item.offers) {
+                                if (!nombre && item.name) nombre = item.name;
+                                const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+                                if (offer && offer.price) {
+                                    active_price = parseFloat(offer.price);
+                                    if (offer.priceValidUntil || offer.highPrice) {
+                                        if (offer.highPrice && parseFloat(offer.highPrice) > active_price) {
+                                            original_price = parseFloat(offer.highPrice);
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    } catch(e) {}
+                    if (active_price) break;
+                }
+            }
+
+            // 6. ESTRATEGIA D: Fallback DOM
+            const h1El = document.querySelector('h1');
+            if (!nombre) {
+                nombre = h1El ? (h1El.innerText || h1El.textContent || '').trim() : document.title.split('|')[0].trim();
+            }
+
+            let active_text = '';
+            let original_text = '';
+
+            if (!active_price) {
+                const activeEl = document.querySelector(
+                    '.product-purchase__price--active, [class*="price--active"], .product-purchase__price, ' +
+                    '[class*="sellingPrice"], [class*="product-price"], [class*="vtex-product-price"]'
+                );
+                active_text = activeEl ? (activeEl.innerText || activeEl.textContent || '').trim() : '';
+
+                const origEl = document.querySelector(
+                    'del.product-purchase__price--original, del, [class*="price--original"], [class*="listPrice"]'
+                );
+                original_text = origEl ? (origEl.innerText || origEl.textContent || '').trim() : '';
+            }
+
+            return {
+                nombre: nombre,
+                active_price_direct: active_price,
+                original_price_direct: original_price,
+                active_text: active_text,
+                original_text: original_text
+            };
+        }
+    """)
+
+
 async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id: str = "1") -> dict:
-    """
-    Extrae información de precio y título desde una página de e-commerce.
-    Utiliza extracción directa por JSON estructurado (__NEXT_DATA__ / JSON-LD) de alta velocidad,
-    con fallback a selectores DOM y heurística H1.
-    """
+    """Ejecuta el ciclo de scraping de una URL con reintentos y retroceso exponencial."""
     intentos = 2
     result = {
         "url": url,
@@ -243,17 +368,17 @@ async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id:
         result["tiene_descuento"] = False
 
         try:
-            timeout = 20000 + (int_num - 1) * 8000
+            timeout = 18000 + (int_num - 1) * 6000
             response = await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-            
+
             if response and response.status >= 400:
                 result["error"] = f"HTTP {response.status}"
                 if response.status == 404:
                     result["error"] = "Producto no disponible o enlace roto (404 / Agotado)."
                     return result
-                if response.status in (429, 403):
-                    backoff = 4 * int_num + random.uniform(2, 5)
-                    print(f"   [{task_id}] ⚠️ HTTP {response.status} detectado. Esperando {backoff:.1f}s...", flush=True)
+                if response.status in (429, 403, 500, 502, 503):
+                    backoff = 3 * int_num + random.uniform(1.5, 4.0)
+                    print(f"   [{task_id}] ⚠️ HTTP {response.status} en {url[:35]}... Esperando {backoff:.1f}s", flush=True)
                     await asyncio.sleep(backoff)
                     continue
                 await asyncio.sleep(1)
@@ -268,95 +393,8 @@ async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id:
             await asyncio.sleep(1)
             continue
 
-        # Extracción priorizada vía JSON estructurado O(1) con fallback al DOM
-        data = await page.evaluate("""
-            () => {
-                const bodyText = document.body ? document.body.innerText || '' : '';
-                const title = document.title || '';
-
-                // 1. Detectar bloqueo Cloudflare/Anti-bot
-                if (title.includes('Cloudflare') || title.includes('Just a moment') || 
-                    bodyText.includes('Checking your browser') || bodyText.includes('Access Denied')) {
-                    return { error: "Bloqueo temporal de seguridad (Cloudflare)." };
-                }
-
-                // 2. Detectar 404 / Agotado
-                if (title.includes('404') || bodyText.includes('Producto no disponible') || 
-                    bodyText.includes('No pudimos encontrar') || bodyText.includes('no encontrado')) {
-                    return { error: "Producto no disponible o enlace roto (404 / Agotado)." };
-                }
-
-                let nombre = null;
-                let active_price = null;
-                let original_price = null;
-
-                // 3. ESTRATEGIA RÁPIDA: Next.js __NEXT_DATA__ (Usado por Farmatodo)
-                const nextDataEl = document.querySelector('script#__NEXT_DATA__');
-                if (nextDataEl) {
-                    try {
-                        const json = JSON.parse(nextDataEl.textContent);
-                        const pageProps = json?.props?.pageProps;
-                        const product = pageProps?.product || pageProps?.initialState?.product?.productDetail;
-                        if (product) {
-                            nombre = product.name || product.description;
-                            if (product.price) active_price = parseFloat(product.price);
-                            if (product.originalPrice) original_price = parseFloat(product.originalPrice);
-                            if (product.priceOffer) {
-                                active_price = parseFloat(product.priceOffer);
-                                original_price = parseFloat(product.price);
-                            }
-                        }
-                    } catch(e) {}
-                }
-
-                // 4. ESTRATEGIA RÁPIDA: JSON-LD (Schema.org / Locatel / SAAS / VTEX)
-                if (!active_price) {
-                    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
-                    for (const script of jsonLdScripts) {
-                        try {
-                            const parsed = JSON.parse(script.textContent || '');
-                            const items = Array.isArray(parsed) ? parsed : [parsed];
-                            for (const item of items) {
-                                if (item['@type'] === 'Product' || item.offers) {
-                                    if (!nombre && item.name) nombre = item.name;
-                                    const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
-                                    if (offer && offer.price) {
-                                        active_price = parseFloat(offer.price);
-                                        break;
-                                    }
-                                }
-                            }
-                        } catch(e) {}
-                        if (active_price) break;
-                    }
-                }
-
-                // 5. FALLBACK DOM: Si los JSON fallan, consultar elementos DOM
-                const h1El = document.querySelector('h1');
-                if (!nombre) {
-                    nombre = h1El ? (h1El.innerText || h1El.textContent || '').trim() : document.title.split('|')[0].trim();
-                }
-
-                let active_text = '';
-                let original_text = '';
-
-                if (!active_price) {
-                    const activeEl = document.querySelector('.product-purchase__price--active, [class*="price--active"], .product-purchase__price, [class*="sellingPrice"], [class*="product-price"]');
-                    active_text = activeEl ? (activeEl.innerText || activeEl.textContent || '').trim() : '';
-                    
-                    const origEl = document.querySelector('del.product-purchase__price--original, del, [class*="price--original"], [class*="listPrice"]');
-                    original_text = origEl ? (origEl.innerText || origEl.textContent || '').trim() : '';
-                }
-
-                return {
-                    nombre: nombre,
-                    active_price_direct: active_price,
-                    original_price_direct: original_price,
-                    active_text: active_text,
-                    original_text: original_text
-                };
-            }
-        """)
+        await asyncio.sleep(0.3)
+        data = await extract_product_data_from_page(page, url, bcv_rate)
 
         if data.get("error"):
             result["error"] = data["error"]
@@ -367,17 +405,17 @@ async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id:
 
         result["nombre"] = data.get("nombre")
 
-        # Evaluar precios extraídos (directos de JSON o parseados desde texto DOM)
+        # Evaluar precios procesados
         precio_activo = data.get("active_price_direct") or parse_price(data.get("active_text"))
         precio_original = data.get("original_price_direct") or parse_price(data.get("original_text"))
 
-        # Filtro de rangos lógicos de Bolívares
-        if precio_activo and (precio_activo <= 0.1 or precio_activo > 150000.0):
+        # Filtro de rango de montos lógicos en Bolívares
+        if precio_activo and (precio_activo <= 0.1 or precio_activo > 200000.0):
             precio_activo = None
-        if precio_original and (precio_original <= 0.1 or precio_original > 150000.0):
+        if precio_original and (precio_original <= 0.1 or precio_original > 200000.0):
             precio_original = None
 
-        # Convertir a USD si el texto o valor lo requiere (ej. SAAS en divisas)
+        # Detección y conversión de precios expresados en USD/Divisas
         if is_usd_text(data.get("active_text")) or (precio_activo and "farmaciasaas" in url.lower() and precio_activo < 20.0):
             if precio_activo:
                 precio_activo = round(precio_activo * bcv_rate, 2)
@@ -386,7 +424,7 @@ async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id:
             if precio_original:
                 precio_original = round(precio_original * bcv_rate, 2)
 
-        # Consolidar descuento o precio regular
+        # Consolidar descuentos
         if precio_original and precio_activo and precio_original > precio_activo:
             result["precio_full_bs"] = precio_original
             result["precio_desc_bs"] = precio_activo
@@ -402,69 +440,19 @@ async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id:
     return result
 
 
-def get_search_query_from_url(url: str) -> str:
-    """Extrae palabras clave para el buscador a partir del slug de la URL."""
-    if not url:
-        return ""
-    if "/producto/" in url:
-        path_part = url.split("/producto/")[-1].split("?")[0].split("#")[0]
-        return re.sub(r'^\d+-', '', path_part).replace("-", " ").strip()
-    elif "/p" in url:
-        parts = [p for p in url.split("/") if p]
-        if len(parts) >= 2:
-            slug = parts[-2]
-            return re.sub(r'^\d+-', '', slug).replace("_", " ").replace("-", " ").strip()
-    return ""
-
-
-async def search_farmatodo_product_url_async(page, query_text: str) -> str:
-    """Buscador fallback asíncrono para hallar enlaces alternativos cuando falla la URL original."""
-    if not query_text:
-        return None
-
-    import urllib.parse
-    encoded = urllib.parse.quote(query_text)
-    search_url = f"https://www.farmatodo.com.ve/buscar/{encoded}"
-
-    try:
-        await page.goto(search_url, wait_until="domcontentloaded", timeout=20000)
-        await asyncio.sleep(1.5)
-
-        links_data = await page.evaluate("""
-            () => {
-                return Array.from(document.querySelectorAll('a'))
-                    .map(a => ({ href: a.getAttribute('href') || '', text: (a.innerText || '').trim() }))
-                    .filter(l => l.href.includes('/producto/'));
-            }
-        """)
-
-        if not links_data:
-            return None
-
-        for l in links_data:
-            href = l["href"]
-            if href.startswith("/"):
-                href = "https://www.farmatodo.com.ve" + href
-            return href
-
-    except Exception:
-        pass
-    return None
-
-
 async def main_async():
     inicio = time.time()
 
-    # 1. Cargar Tasa BCV al inicio (Una sola vez)
+    # 1. Cargar Tasa Oficial BCV una sola vez
     bcv_rate = fetch_bcv_rate_once()
 
-    # 2. Cargar datos desde Firestore o CSV
+    # 2. Cargar lista de productos desde Firestore o CSV local
     filas_todas = cargar_filas_de_firestore() or cargar_filas_de_csv()
     if not filas_todas:
-        print("ERROR: No se encontraron filas de productos.")
+        print("ERROR: No se encontraron filas de productos para procesar.")
         sys.exit(1)
 
-    # 3. Filtrar filas activas
+    # 3. Filtrar enlaces activos
     only_prod = os.environ.get("ONLY_PRODUCT_ID")
     only_doc = os.environ.get("ONLY_DOC_ID")
 
@@ -472,7 +460,7 @@ async def main_async():
     for fila in filas_todas:
         activo = fila.get("activo")
         es_activa = activo if isinstance(activo, bool) else str(activo).strip().lower() in ("si", "sí", "true", "1", "yes")
-        
+
         if not es_activa:
             continue
 
@@ -488,79 +476,94 @@ async def main_async():
         print("No hay enlaces de productos activos para procesar.")
         sys.exit(0)
 
-    # 4. APLICAR ENTRELAZADO ROUND-ROBIN POR CADENA (Evita saturar un solo dominio)
+    # 4. Entrelazar filas por cadena para rotar peticiones
     filas_procesar = interleave_filas_por_cadena(filas_activas)
 
-    print(f"\nProcesando {len(filas_procesar)} URLs activas con Async Playwright (Máx {MAX_CONCURRENT_PAGES} concurrentes)...\n", flush=True)
+    # 5. Crear semáforos de concurrencia globales y por dominio
+    global_semaphore = asyncio.Semaphore(MAX_GLOBAL_CONCURRENCY)
+    domain_semaphores = {
+        "farmatodo": asyncio.Semaphore(MAX_PER_DOMAIN_CONCURRENCY),
+        "locatel": asyncio.Semaphore(MAX_PER_DOMAIN_CONCURRENCY),
+        "farmaciasaas": asyncio.Semaphore(MAX_PER_DOMAIN_CONCURRENCY),
+        "saas": asyncio.Semaphore(MAX_PER_DOMAIN_CONCURRENCY),
+        "default": asyncio.Semaphore(MAX_PER_DOMAIN_CONCURRENCY)
+    }
 
-    semaphore = asyncio.Semaphore(MAX_CONCURRENT_PAGES)
+    def get_domain_semaphore(cadena_str: str):
+        cad = str(cadena_str).lower()
+        for k in domain_semaphores:
+            if k in cad:
+                return domain_semaphores[k]
+        return domain_semaphores["default"]
 
-    # 5. Lanzar 1 SOLO NAVEGADOR para todo el proceso
+    print(f"\nIniciando scraping de {len(filas_procesar)} URLs (Concurrencia Máx: {MAX_GLOBAL_CONCURRENCY})...\n", flush=True)
+
+    # 6. Lanzar un único navegador Chromium
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             viewport={"width": 1280, "height": 720},
             locale="es-VE"
         )
-        
-        # Ocultar marca de automatización
         await context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
 
-        # Worker asíncrono con control de semáforo
         async def worker(idx, fila):
-            async with semaphore:
-                page = await context.new_page()
-                await page.route("**/*", block_unnecessary_resources)
+            cadena = str(fila.get("cadena", "Farmatodo")).strip()
+            dom_sem = get_domain_semaphore(cadena)
 
-                marca = str(fila.get("marca", "")).strip() or "?"
-                url = str(fila.get("url", "")).strip()
-                id_prod = str(fila.get("id_producto_propio", "")).strip()
-                cadena = str(fila.get("cadena", "Farmatodo")).strip()
+            async with global_semaphore:
+                async with dom_sem:
+                    page = await context.new_page()
+                    await page.route("**/*", block_unnecessary_resources)
 
-                if not url:
-                    res = {
-                        "url": "", "marca": marca, "nombre": None,
-                        "precio_full_bs": None, "precio_desc_bs": None,
-                        "tiene_descuento": False, "scraped_at": datetime.now(timezone.utc).isoformat(),
-                        "error": "URL vacia"
-                    }
-                else:
-                    # Pequeño escalonamiento entre peticiones para naturalidad
-                    await asyncio.sleep(random.uniform(0.1, 0.4))
-                    res = await scrape_url_async(page, url, marca, bcv_rate, task_id=f"{idx}")
+                    marca = str(fila.get("marca", "")).strip() or "?"
+                    url = str(fila.get("url", "")).strip()
+                    id_prod = str(fila.get("id_producto_propio", "")).strip()
 
-                res["id_producto_propio"] = id_prod
-                res["cadena"] = cadena
-                res["tipo"] = fila.get("tipo", "")
-                res["laboratorio"] = fila.get("laboratorio", "")
-                res["_doc_id"] = fila.get("_doc_id")
+                    if not url:
+                        res = {
+                            "url": "", "marca": marca, "nombre": None,
+                            "precio_full_bs": None, "precio_desc_bs": None,
+                            "tiene_descuento": False, "scraped_at": datetime.now(timezone.utc).isoformat(),
+                            "error": "URL vacia"
+                        }
+                    else:
+                        await asyncio.sleep(random.uniform(0.1, 0.3))
+                        res = await scrape_url_async(page, url, marca, bcv_rate, task_id=f"{idx}")
 
-                await page.close()
+                    res["id_producto_propio"] = id_prod
+                    res["cadena"] = cadena
+                    res["tipo"] = fila.get("tipo", "")
+                    res["laboratorio"] = fila.get("laboratorio", "")
+                    res["_doc_id"] = fila.get("_doc_id")
 
-                if res.get("error"):
-                    print(f"[{idx}/{len(filas_procesar)}] ❌ [{cadena}] {marca} - {res['error']}", flush=True)
-                else:
-                    status = f"Bs {res['precio_full_bs']:,.2f}"
-                    if res['tiene_descuento']:
-                        status += f" -> Bs {res['precio_desc_bs']:,.2f}"
-                    print(f"[{idx}/{len(filas_procesar)}] ✅ [{cadena}] {marca} ({id_prod}): {status}", flush=True)
+                    await page.close()
 
-                return res
+                    if res.get("error"):
+                        print(f"[{idx}/{len(filas_procesar)}] ❌ [{cadena}] {marca} - {res['error']}", flush=True)
+                    else:
+                        status = f"Bs {res['precio_full_bs']:,.2f}"
+                        if res['tiene_descuento']:
+                            status += f" -> Bs {res['precio_desc_bs']:,.2f}"
+                        print(f"[{idx}/{len(filas_procesar)}] ✅ [{cadena}] {marca} ({id_prod}): {status}", flush=True)
+
+                    return res
 
         tasks = [worker(i + 1, fila) for i, fila in enumerate(filas_procesar)]
         resultados = await asyncio.gather(*tasks)
 
         await browser.close()
 
+    # 7. Guardar resultados localmente
     with open(RESULTS_PATH, "w", encoding="utf-8") as f:
         json.dump(resultados, f, ensure_ascii=False, indent=2, default=str)
 
     duracion = time.time() - inicio
     ok_count = sum(1 for r in resultados if not r.get("error"))
     print("\n" + "=" * 60)
-    print(f"COMPLETADO en {duracion:.1f}s | Éxito: {ok_count}/{len(resultados)} OK")
-    print(f"Resultados guardados en: {RESULTS_PATH}")
+    print(f"COMPLETADO en {duracion:.1f}s ({duracion/60:.1f} min) | Éxito: {ok_count}/{len(resultados)} OK")
+    print(f"Resultados guardados localmente en: {RESULTS_PATH}")
     print("=" * 60)
 
 
