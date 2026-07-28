@@ -154,7 +154,7 @@ def cargar_filas_de_csv():
 
 
 def scrape_url(page, url, marca, thread_id=1):
-    intentos = 4
+    intentos = 2
     result = {
         "url": url,
         "marca": marca,
@@ -175,8 +175,8 @@ def scrape_url(page, url, marca, thread_id=1):
         result["tiene_descuento"] = False
 
         try:
-            # Incrementar el timeout de carga progresivamente en cada reintento
-            timeout = 30000 + (int_num - 1) * 10000
+            # Timeout optimizado para respuesta rápida
+            timeout = 20000 + (int_num - 1) * 8000
             response = page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             if response and response.status >= 400:
                 result["error"] = f"HTTP {response.status}"
@@ -185,24 +185,24 @@ def scrape_url(page, url, marca, thread_id=1):
                     result["error"] = "Producto no disponible o enlace roto (404 / Agotado)."
                     return result
                 if response.status == 429:
-                    backoff_sec = 8 * int_num + random.uniform(3, 8)
+                    backoff_sec = 4 * int_num + random.uniform(2, 5)
                     print(f"   [Hilo {thread_id}] ⚠️ HTTP 429 (Too Many Requests) detectado! Esperando {backoff_sec:.1f}s (Backoff)...", flush=True)
                     time.sleep(backoff_sec)
                     continue
                 if response.status == 403:
-                    backoff_sec = 10 * int_num + random.uniform(5, 10)
+                    backoff_sec = 5 * int_num + random.uniform(3, 6)
                     print(f"   [Hilo {thread_id}] ⚠️ HTTP 403 (Forbidden/Blocked) detectado! Esperando {backoff_sec:.1f}s (Backoff)...", flush=True)
                     time.sleep(backoff_sec)
                     continue
-                time.sleep(2)
+                time.sleep(1)
                 continue
         except PlaywrightTimeout:
             result["error"] = "Timeout cargando la página"
-            time.sleep(2)
+            time.sleep(1)
             continue
         except Exception as e:
             result["error"] = f"Error de red/carga: {type(e).__name__}"
-            time.sleep(2)
+            time.sleep(1)
             continue
 
         print("   Esperando contenido...", flush=True)
@@ -1016,7 +1016,10 @@ def main():
                 print(f"Error crítico en hilo de scraping: {e}", flush=True)
 
     # SEGUNDO PASO: Reintento secuencial inteligente y fallback de búsqueda para los que fallaron
-    failed_results = [r for r in resultados if r.get("error")]
+    failed_results = [
+        r for r in resultados 
+        if r.get("error") and "404" not in str(r.get("error")) and "Agotado" not in str(r.get("error")) and "vacia" not in str(r.get("error"))
+    ]
     if failed_results:
         print("", flush=True)
         print("=" * 60, flush=True)
