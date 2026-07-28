@@ -222,7 +222,7 @@ async def extract_product_data_from_page(page, url: str, bcv_rate: float) -> dic
     """
     Motor universal de extracción de e-commerce.
     Soporta Next.js (__NEXT_DATA__), VTEX (__STATE__ / commertialOffer)
-    y Schema.org JSON-LD con fallback resiliente al DOM.
+    y Schema.org JSON-LD con extracción complementaria del DOM (incluyendo tachados y ofertas).
     """
     return await page.evaluate("""
         () => {
@@ -251,44 +251,72 @@ async def extract_product_data_from_page(page, url: str, bcv_rate: float) -> dic
                 try {
                     const json = JSON.parse(nextDataEl.textContent);
                     const pageProps = json?.props?.pageProps;
-                    const product = pageProps?.product || pageProps?.initialState?.product?.productDetail;
+                    
+                    const findProduct = (obj, depth = 0) => {
+                        if (!obj || depth > 5) return null;
+                        if (obj.product && (obj.product.price || obj.product.name || obj.product.priceOffer || obj.product.description)) return obj.product;
+                        if (obj.productDetail) return obj.productDetail;
+                        if (obj.productData) return obj.productData;
+                        for (const k in obj) {
+                            if (k === 'product' || k === 'productDetail' || k === 'productData') return obj[k];
+                            if (typeof obj[k] === 'object' && obj[k] !== null && !Array.isArray(obj[k])) {
+                                const res = findProduct(obj[k], depth + 1);
+                                if (res) return res;
+                            }
+                        }
+                        return null;
+                    };
+
+                    const product = findProduct(pageProps) || pageProps?.initialState?.product?.productDetail;
                     if (product) {
-                        nombre = product.name || product.description;
-                        if (product.price) active_price = parseFloat(product.price);
-                        if (product.originalPrice) original_price = parseFloat(product.originalPrice);
-                        if (product.priceOffer) {
-                            active_price = parseFloat(product.priceOffer);
-                            original_price = parseFloat(product.price);
+                        nombre = product.name || product.description || product.title;
+                        
+                        const p1 = parseFloat(product.price);
+                        const p2 = parseFloat(product.originalPrice || product.regularPrice || product.listPrice || product.fullPrice || product.normalPrice || product.basePrice || product.priceWithoutDiscount);
+                        const p3 = parseFloat(product.priceOffer || product.offerPrice || product.priceWithOffer || product.discountPrice || product.salePrice);
+
+                        if (p3 && p3 > 0) {
+                            active_price = p3;
+                            if (p1 && p1 > p3) original_price = p1;
+                            if (p2 && p2 > p3) original_price = p2;
+                        } else if (p1 && p1 > 0) {
+                            active_price = p1;
+                            if (p2 && p2 > p1) original_price = p2;
+                        } else if (p2 && p2 > 0) {
+                            active_price = p2;
                         }
                     }
                 } catch(e) {}
             }
 
-            // 4. ESTRATEGIA B: VTEX Data Layer / State (Locatel, Farmacias SAAS)
-            if (!active_price && window.__STATE__) {
+            // 4. ESTRATEGIA B: VTEX __STATE__ (Locatel, Farmacias SAAS)
+            if (window.__STATE__) {
                 try {
                     const state = window.__STATE__;
                     for (const k in state) {
-                        if (k.includes('Product:') || k.includes('Item:')) {
+                        if (k.includes('Product:') || k.includes('Item:') || k.includes('commertialOffer')) {
                             const item = state[k];
                             if (!nombre && item.productName) nombre = item.productName;
-                            if (item.sellers && item.sellers[0]) {
-                                const comm = item.sellers[0].commertialOffer;
-                                if (comm && comm.Price) {
+                            
+                            const comm = item.commertialOffer || (item.sellers && item.sellers[0] && item.sellers[0].commertialOffer);
+                            if (comm) {
+                                if (comm.Price && parseFloat(comm.Price) > 0) {
                                     active_price = parseFloat(comm.Price);
-                                    if (comm.ListPrice && comm.ListPrice > comm.Price) {
-                                        original_price = parseFloat(comm.ListPrice);
-                                    }
-                                    break;
                                 }
+                                if (comm.ListPrice && parseFloat(comm.ListPrice) > 0) {
+                                    original_price = parseFloat(comm.ListPrice);
+                                } else if (comm.PriceWithoutDiscount && parseFloat(comm.PriceWithoutDiscount) > 0) {
+                                    original_price = parseFloat(comm.PriceWithoutDiscount);
+                                }
+                                if (active_price) break;
                             }
                         }
                     }
                 } catch(e) {}
             }
 
-            // 5. ESTRATEGIA C: JSON-LD (Schema.org Universal)
-            if (!active_price) {
+            // 5. ESTRATEGIA C: Schema.org JSON-LD
+            if (!active_price || !original_price) {
                 const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
                 for (const script of jsonLdScripts) {
                     try {
@@ -297,51 +325,68 @@ async def extract_product_data_from_page(page, url: str, bcv_rate: float) -> dic
                         for (const item of items) {
                             if (item['@type'] === 'Product' || item.offers) {
                                 if (!nombre && item.name) nombre = item.name;
-                                const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
-                                if (offer && offer.price) {
-                                    active_price = parseFloat(offer.price);
-                                    if (offer.priceValidUntil || offer.highPrice) {
-                                        if (offer.highPrice && parseFloat(offer.highPrice) > active_price) {
-                                            original_price = parseFloat(offer.highPrice);
-                                        }
+                                const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
+                                for (const offer of offers) {
+                                    if (!offer) continue;
+                                    if (offer.price && !active_price) active_price = parseFloat(offer.price);
+                                    if (offer.highPrice && parseFloat(offer.highPrice) > 0) {
+                                        const hp = parseFloat(offer.highPrice);
+                                        if (!original_price || hp > original_price) original_price = hp;
                                     }
-                                    break;
                                 }
                             }
                         }
                     } catch(e) {}
-                    if (active_price) break;
                 }
             }
 
-            // 6. ESTRATEGIA D: Fallback DOM
+            // 6. ESTRATEGIA D: DOM EXTRACTION (SIEMPRE COMPLEMENTA DOM SI FALTA INFORMACIÓN)
             const h1El = document.querySelector('h1');
             if (!nombre) {
                 nombre = h1El ? (h1El.innerText || h1El.textContent || '').trim() : document.title.split('|')[0].trim();
             }
 
-            let active_text = '';
-            let original_text = '';
+            let dom_active_text = '';
+            let dom_original_text = '';
 
-            if (!active_price) {
-                const activeEl = document.querySelector(
-                    '.product-purchase__price--active, [class*="price--active"], .product-purchase__price, ' +
-                    '[class*="sellingPrice"], [class*="product-price"], [class*="vtex-product-price"]'
-                );
-                active_text = activeEl ? (activeEl.innerText || activeEl.textContent || '').trim() : '';
+            // A. Buscar precios tachados en DOM (del, s, strike, line-through, listPrice, etc.)
+            const origEls = document.querySelectorAll(
+                'del, s, strike, .line-through, [class*="line-through"], ' +
+                '[class*="price--original"], [class*="original-price"], [class*="originalPrice"], ' +
+                '[class*="listPrice"], [class*="list-price"], [class*="oldPrice"], [class*="old-price"], ' +
+                '[class*="was-price"], [class*="before-price"], [class*="precio-anterior"], [class*="strikethrough"]'
+            );
+            for (const el of origEls) {
+                const txt = (el.innerText || el.textContent || '').trim();
+                // Filtrar textos de costo por unidad o dosis ("tabletas a", "unidad a", "c/u")
+                if (txt && !/tableta|unidad\s+a|c\/u|dosis/i.test(txt)) {
+                    dom_original_text = txt;
+                    break;
+                }
+            }
 
-                const origEl = document.querySelector(
-                    'del.product-purchase__price--original, del, [class*="price--original"], [class*="listPrice"]'
-                );
-                original_text = origEl ? (origEl.innerText || origEl.textContent || '').trim() : '';
+            // B. Buscar precio activo principal en DOM
+            const activeEls = document.querySelectorAll(
+                '.product-purchase__price--active, [class*="price--active"], .product-purchase__price, ' +
+                '[class*="sellingPrice"], [class*="bestPrice"], [class*="best-price"], [class*="offer-price"], ' +
+                '[class*="product-price"], [class*="vtex-product-price"], [class*="current-price"]'
+            );
+            for (const el of activeEls) {
+                if (!el.matches('del, s, strike, .line-through, [class*="original"], [class*="old"], [class*="listPrice"]')) {
+                    const txt = (el.innerText || el.textContent || '').trim();
+                    if (txt && !/tableta|unidad\s+a|c\/u|dosis/i.test(txt)) {
+                        dom_active_text = txt;
+                        break;
+                    }
+                }
             }
 
             return {
                 nombre: nombre,
                 active_price_direct: active_price,
                 original_price_direct: original_price,
-                active_text: active_text,
-                original_text: original_text
+                dom_active_text: dom_active_text,
+                dom_original_text: dom_original_text
             };
         }
     """)
@@ -405,33 +450,64 @@ async def scrape_url_async(page, url: str, marca: str, bcv_rate: float, task_id:
 
         result["nombre"] = data.get("nombre")
 
-        # Evaluar precios procesados
-        precio_activo = data.get("active_price_direct") or parse_price(data.get("active_text"))
-        precio_original = data.get("original_price_direct") or parse_price(data.get("original_text"))
+        # 1. Candidatos directos de JSON/DataLayers
+        p_act_direct = data.get("active_price_direct")
+        p_orig_direct = data.get("original_price_direct")
 
-        # Filtro de rango de montos lógicos en Bolívares
-        if precio_activo and (precio_activo <= 0.1 or precio_activo > 200000.0):
-            precio_activo = None
-        if precio_original and (precio_original <= 0.1 or precio_original > 200000.0):
-            precio_original = None
+        # 2. Candidatos del DOM
+        p_act_dom = parse_price(data.get("dom_active_text"))
+        p_orig_dom = parse_price(data.get("dom_original_text"))
 
         # Detección y conversión de precios expresados en USD/Divisas
-        if is_usd_text(data.get("active_text")) or (precio_activo and "farmaciasaas" in url.lower() and precio_activo < 20.0):
-            if precio_activo:
-                precio_activo = round(precio_activo * bcv_rate, 2)
+        if is_usd_text(data.get("dom_active_text")) or (p_act_dom and "farmaciasaas" in url.lower() and p_act_dom < 20.0):
+            if p_act_dom:
+                p_act_dom = round(p_act_dom * bcv_rate, 2)
 
-        if is_usd_text(data.get("original_text")) or (precio_original and "farmaciasaas" in url.lower() and precio_original < 20.0):
-            if precio_original:
-                precio_original = round(precio_original * bcv_rate, 2)
+        if is_usd_text(data.get("dom_original_text")) or (p_orig_dom and "farmaciasaas" in url.lower() and p_orig_dom < 20.0):
+            if p_orig_dom:
+                p_orig_dom = round(p_orig_dom * bcv_rate, 2)
 
-        # Consolidar descuentos
-        if precio_original and precio_activo and precio_original > precio_activo:
-            result["precio_full_bs"] = precio_original
-            result["precio_desc_bs"] = precio_activo
-            result["tiene_descuento"] = True
-            break
-        elif precio_activo:
-            result["precio_full_bs"] = precio_activo
+        # Filtrar valores dentro del rango lógico en Bolívares
+        actives = [p for p in (p_act_direct, p_act_dom) if p and 0.1 < p < 200000.0]
+        originals = [p for p in (p_orig_direct, p_orig_dom) if p and 0.1 < p < 200000.0]
+
+        all_detected = set(actives + originals)
+
+        precio_full = None
+        precio_desc = None
+        tiene_descuento = False
+
+        if originals and actives:
+            p_orig = max(originals)
+            p_act = min(actives)
+            if p_orig > p_act:
+                precio_full = p_orig
+                precio_desc = p_act
+                tiene_descuento = True
+            elif p_act > p_orig:
+                precio_full = p_act
+                precio_desc = p_orig
+                tiene_descuento = True
+            else:
+                precio_full = p_act
+        elif len(all_detected) >= 2:
+            p_max = max(all_detected)
+            p_min = min(all_detected)
+            if p_max > p_min and (p_max - p_min) > 0.05:
+                precio_full = p_max
+                precio_desc = p_min
+                tiene_descuento = True
+            else:
+                precio_full = p_max
+        elif actives:
+            precio_full = actives[0]
+        elif originals:
+            precio_full = originals[0]
+
+        if precio_full:
+            result["precio_full_bs"] = precio_full
+            result["precio_desc_bs"] = precio_desc
+            result["tiene_descuento"] = tiene_descuento
             break
         else:
             result["error"] = "Precio no encontrado en la estructura de la página."
