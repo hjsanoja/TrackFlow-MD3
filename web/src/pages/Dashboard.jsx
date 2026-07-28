@@ -818,32 +818,39 @@ export default function Dashboard({ user, userDoc }) {
       <div className="bg-white rounded-3xl border border-outline-variant p-5 flex flex-wrap items-center justify-between gap-4 shadow-sm">
         <BcvController bcv={bcv} />
         
-        {ultimaCorrida && (
-          <div className="flex items-center gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-3 text-xs">
+          <div className="flex items-center gap-2">
             <span className="text-on-surface-variant font-sans font-semibold">Último Análisis Scraper:</span>
             {waitingForScraper ? (
-              <span className="inline-flex items-center gap-1.5 font-mono bg-amber-500 text-white px-3.5 py-1.5 rounded-full font-bold animate-pulse">
+              <span className="inline-flex items-center gap-1.5 font-mono bg-amber-500 text-white px-3 py-1 rounded-full font-bold animate-pulse">
                 <span className="material-symbols-outlined text-xs animate-spin leading-none">sync</span>
                 Robot Trabajando...
               </span>
-            ) : (
+            ) : ultimaCorrida ? (
               <>
                 <span className="font-mono bg-primary text-on-primary px-3 py-1 rounded-full font-bold">
                   {ultimaCorrida.started_at ? formatTimeAgo(ultimaCorrida.started_at) : '—'}
                 </span>
-                <span className="text-on-surface-variant font-semibold">
+                <span className="text-on-surface-variant font-semibold hidden sm:inline">
                   ({ultimaCorrida.ok}/{ultimaCorrida.total} exitosos)
                 </span>
               </>
-            )}
-            {isAdmin && (
-              <button onClick={handleActualizar} disabled={refreshing || waitingForScraper}
-                className="px-4 py-2 bg-secondary text-on-secondary hover:bg-secondary/90 disabled:opacity-50 font-extrabold uppercase font-mono tracking-wider text-[10px] rounded-full transition-all">
-                {refreshing ? 'Iniciando...' : waitingForScraper ? 'Ejecutando...' : 'Actualizar'}
-              </button>
+            ) : (
+              <span className="font-mono bg-surface-low text-on-surface-variant px-3 py-1 rounded-full font-bold border border-outline-variant">
+                Sin ejecuciones previas
+              </span>
             )}
           </div>
-        )}
+
+          <button onClick={handleActualizar} disabled={refreshing || waitingForScraper}
+            className="px-4 py-2.5 bg-secondary text-on-secondary hover:bg-secondary/90 disabled:opacity-50 font-extrabold font-mono tracking-wide text-xs rounded-full transition-all flex items-center gap-2 shadow-sm"
+            title="Iniciar robot extractor para actualizar precios de competidores">
+            <span className={`material-symbols-outlined text-base ${refreshing || waitingForScraper ? 'animate-spin' : ''}`}>
+              {refreshing || waitingForScraper ? 'sync' : 'smart_toy'}
+            </span>
+            <span>{refreshing ? 'Iniciando...' : waitingForScraper ? 'Ejecutando Robot...' : 'Ejecutar Scraper / Actualizar'}</span>
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards Area */}

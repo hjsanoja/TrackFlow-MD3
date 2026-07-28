@@ -33,6 +33,7 @@ export default function Competencia() {
   const [deletingAll, setDeletingAll] = useState(false);
   const [scrapingItems, setScrapingItems] = useState({});
   const [manualPriceItem, setManualPriceItem] = useState(null);
+  const [isGlobalScraping, setIsGlobalScraping] = useState(false);
 
   const { addToast } = useToast();
 
@@ -196,6 +197,38 @@ export default function Competencia() {
     }
     setDeletingAll(false);
     setConfirmDeleteAll(false);
+  };
+
+  const handleDispararScraperGlobal = async () => {
+    setIsGlobalScraping(true);
+    try {
+      const secretSnap = await getDoc(doc(db, 'secrets', 'github_dispatch'));
+      if (!secretSnap.exists()) {
+        throw new Error('Falta configurar las credenciales de GitHub en Firestore (secrets/github_dispatch).');
+      }
+      const { token, repo_owner, repo_name, workflow_event_type } = secretSnap.data();
+      const res = await fetch(
+        `https://api.github.com/repos/${repo_owner}/${repo_name}/dispatches`,
+        {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/vnd.github+json',
+            'Authorization': `Bearer ${token}`,
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+          body: JSON.stringify({ event_type: workflow_event_type || 'run-scraper' }),
+        }
+      );
+      if (res.status === 204) {
+        addToast('El robot scraper global ha sido ejecutado vía GitHub Actions. Los datos se actualizarán automáticamente al terminar.', 'success');
+      } else {
+        const txt = await res.text();
+        throw new Error(`GitHub respondió ${res.status}: ${txt}`);
+      }
+    } catch (err) {
+      addToast('Error al disparar scraper: ' + err.message, 'error');
+    }
+    setIsGlobalScraping(false);
   };
 
   const handleToggleActivo = async (item) => {
@@ -558,8 +591,17 @@ export default function Competencia() {
             <span className="material-symbols-outlined text-base">upload_file</span>
             <span>Importar CSV</span>
           </button>
+          <button onClick={handleDispararScraperGlobal}
+            disabled={isGlobalScraping}
+            className="text-xs px-4 py-2.5 bg-secondary text-on-secondary hover:bg-secondary/90 font-extrabold shadow-sm rounded-full transition-all flex items-center gap-1.5 disabled:opacity-50"
+            title="Lanzar el robot extractor de precios para todos los enlaces activos">
+            <span className={`material-symbols-outlined text-base ${isGlobalScraping ? 'animate-spin' : ''}`}>
+              {isGlobalScraping ? 'sync' : 'smart_toy'}
+            </span>
+            <span>{isGlobalScraping ? 'Ejecutando...' : 'Ejecutar Scraper Robot'}</span>
+          </button>
           <button onClick={() => setEditing('new')}
-            className="text-xs px-5 py-2.5 bg-secondary hover:bg-secondary/90 text-on-secondary font-extrabold shadow-sm rounded-full transition-all flex items-center gap-1.5">
+            className="text-xs px-5 py-2.5 bg-primary hover:bg-primary/90 text-on-primary font-extrabold shadow-sm rounded-full transition-all flex items-center gap-1.5">
             <span className="material-symbols-outlined text-base">add</span>
             <span>Vincular Enlace</span>
           </button>
