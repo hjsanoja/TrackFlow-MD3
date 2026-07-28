@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import {
-  collection, doc, setDoc, deleteDoc, writeBatch
+  collection, doc, setDoc, deleteDoc, writeBatch, getDocs
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
@@ -38,6 +38,8 @@ export default function Productos() {
   const [filtroUn, setFiltroUn] = useState('todos'); // todos | lasante | pharmetique | otc
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
 
   const { addToast } = useToast();
 
@@ -157,6 +159,58 @@ export default function Productos() {
     }
   };
 
+  const handleConfirmDeleteAll = async () => {
+    setDeletingAll(true);
+    try {
+      // 1. Delete all productos
+      const prodSnap = await getDocs(collection(db, 'productos'));
+      const prodDocs = prodSnap.docs;
+      for (let i = 0; i < prodDocs.length; i += 500) {
+        const chunk = prodDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // 2. Delete all productos_competencia
+      const compSnap = await getDocs(collection(db, 'productos_competencia'));
+      const compDocs = compSnap.docs;
+      for (let i = 0; i < compDocs.length; i += 500) {
+        const chunk = compDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // 3. Delete all historico_precios
+      const histSnap = await getDocs(collection(db, 'historico_precios'));
+      const histDocs = histSnap.docs;
+      for (let i = 0; i < histDocs.length; i += 500) {
+        const chunk = histDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // 4. Delete all scrape_runs
+      const runsSnap = await getDocs(collection(db, 'scrape_runs'));
+      const runsDocs = runsSnap.docs;
+      for (let i = 0; i < runsDocs.length; i += 500) {
+        const chunk = runsDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      addToast('Se han eliminado todos los productos, enlaces de competencia e historial de precios con éxito.', 'success');
+      await cargar();
+    } catch (err) {
+      addToast('Error al vaciar catálogo: ' + err.message, 'error');
+    }
+    setDeletingAll(false);
+    setConfirmDeleteAll(false);
+  };
+
   const handleToggleActivo = async (producto) => {
     try {
       await setDoc(doc(db, 'productos', producto.id), {
@@ -225,7 +279,7 @@ export default function Productos() {
           };
 
           const prodRef = doc(db, 'productos', id);
-          batch.set(prodRef, cleanProd);
+          batch.set(prodRef, cleanProd, { merge: true });
           count++;
 
           for (const key of Object.keys(row)) {
@@ -233,11 +287,20 @@ export default function Productos() {
               const chainNameClean = key.slice(4).trim();
               const urlVal = row[key].trim();
               if (urlVal) {
-                const docId = `${id}_${chainNameClean}_Competencia`.replace(/\s+/g, '_');
+                const cadenaFormatted = chainNameClean.charAt(0).toUpperCase() + chainNameClean.slice(1);
+                // Search if an existing competitor link already exists for this product + chain
+                const existingComp = competencia.find(c =>
+                  c.id_producto_propio === id &&
+                  c.cadena.toLowerCase().trim() === cadenaFormatted.toLowerCase().trim()
+                );
+                const docId = existingComp
+                  ? existingComp.id
+                  : `${id}_${chainNameClean}_Competencia`.replace(/\s+/g, '_');
+
                 const compRef = doc(db, 'productos_competencia', docId);
                 batch.set(compRef, {
                   id_producto_propio: id,
-                  cadena: chainNameClean.charAt(0).toUpperCase() + chainNameClean.slice(1),
+                  cadena: cadenaFormatted,
                   tipo: 'alternativa',
                   marca: nombre,
                   url: urlVal,
@@ -425,6 +488,13 @@ export default function Productos() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <button onClick={() => setConfirmDeleteAll(true)}
+            disabled={deletingAll || productos.length === 0}
+            className="text-xs px-4 py-2.5 bg-red-50 hover:bg-red-100 border border-red-200 font-bold text-red-700 rounded-full transition-all flex items-center gap-1.5 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Eliminar todos los productos, enlaces de competencia e historial">
+            <span className="material-symbols-outlined text-base">delete_sweep</span>
+            <span>{deletingAll ? 'Vaciando...' : 'Vaciar Catálogo'}</span>
+          </button>
           <button onClick={handleExportarCatalogo}
             className="text-xs px-4 py-2.5 bg-white border border-outline-variant hover:bg-surface-low font-bold text-primary rounded-full transition-all flex items-center gap-1.5 shadow-sm"
             title="Exportar vista actual a archivo CSV">
@@ -719,6 +789,18 @@ export default function Productos() {
         isDanger={true}
         onConfirm={handleConfirmDelete}
         onCancel={() => setConfirmDelete(null)}
+      />
+
+      {/* Confirm Modal to Delete All Products and History */}
+      <ConfirmModal
+        isOpen={confirmDeleteAll}
+        title="¿Vaciar Catálogo de Productos Completo?"
+        message="¿Estás seguro de que deseas eliminar TODOS los productos de tu catálogo, junto con todos sus enlaces de competencia y todo el historial de precios acumulado?\n\nEsta acción eliminará de forma permanente toda la base de datos de productos y competidores, y NO se puede deshacer."
+        confirmText={deletingAll ? "Eliminando..." : "Sí, Vaciar Todo"}
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleConfirmDeleteAll}
+        onCancel={() => setConfirmDeleteAll(false)}
       />
 
       {/* CSV Import Modal */}

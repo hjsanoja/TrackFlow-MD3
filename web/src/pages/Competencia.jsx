@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { doc, setDoc, deleteDoc, getDoc, writeBatch, onSnapshot } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc, getDoc, getDocs, collection, writeBatch, onSnapshot } from 'firebase/firestore';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import ConfirmModal from '../components/ConfirmModal';
@@ -29,6 +29,8 @@ export default function Competencia() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [showCsvModal, setShowCsvModal] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
+  const [deletingAll, setDeletingAll] = useState(false);
   const [scrapingItems, setScrapingItems] = useState({});
   const [manualPriceItem, setManualPriceItem] = useState(null);
 
@@ -89,13 +91,23 @@ export default function Competencia() {
   const handleSave = async (data, isNew) => {
     try {
       const labPart = data.laboratorio?.trim() ? `_${data.laboratorio.trim()}` : '';
-      const docId = isNew
-        ? `${data.id_producto_propio}_${data.cadena}_${data.marca}${labPart}`.replace(/[\s/\\]+/g, '_')
-        : editing.id;
-      
-      if (isNew && items.some(it => it.id === docId)) {
-        throw new Error('Ya existe esta combinación de producto + cadena + marca + laboratorio');
-      }
+      const existing = isNew ? (
+        items.find(it =>
+          it.id_producto_propio === data.id_producto_propio &&
+          it.cadena.toLowerCase().trim() === data.cadena.toLowerCase().trim() &&
+          (data.marca ? (it.marca || '').toLowerCase().trim() === data.marca.toLowerCase().trim() : true)
+        ) || items.find(it =>
+          it.id_producto_propio === data.id_producto_propio &&
+          it.cadena.toLowerCase().trim() === data.cadena.toLowerCase().trim()
+        )
+      ) : null;
+
+      const docId = !isNew
+        ? editing.id
+        : existing
+          ? existing.id
+          : `${data.id_producto_propio}_${data.cadena}_${data.marca || 'comp'}${labPart}`.replace(/[\s/\\]+/g, '_');
+
       const cadenaObj = cadenas.find(c => c.nombre === data.cadena);
       if (cadenaObj && cadenaObj.website && data.url) {
         try {
@@ -118,8 +130,8 @@ export default function Competencia() {
         laboratorio: data.laboratorio?.trim() || '',
         concentracion: data.concentracion?.trim() || '',
         tamano: data.tamano?.trim() || '',
-      }, { merge: !isNew });
-      addToast(isNew ? 'URL de competencia creada con éxito' : 'Cambios guardados con éxito', 'success');
+      }, { merge: true });
+      addToast(isNew ? (existing ? 'URL de competencia actualizada con éxito' : 'URL de competencia creada con éxito') : 'Cambios guardados con éxito', 'success');
       setEditing(null);
       await cargar();
     } catch (err) {
@@ -142,6 +154,48 @@ export default function Competencia() {
     } catch (err) {
       addToast('Error al eliminar: ' + err.message, 'error');
     }
+  };
+
+  const handleConfirmDeleteAll = async () => {
+    setDeletingAll(true);
+    try {
+      // 1. Delete all productos_competencia
+      const compSnap = await getDocs(collection(db, 'productos_competencia'));
+      const compDocs = compSnap.docs;
+      for (let i = 0; i < compDocs.length; i += 500) {
+        const chunk = compDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // 2. Delete all historico_precios
+      const histSnap = await getDocs(collection(db, 'historico_precios'));
+      const histDocs = histSnap.docs;
+      for (let i = 0; i < histDocs.length; i += 500) {
+        const chunk = histDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // 3. Delete all scrape_runs
+      const runsSnap = await getDocs(collection(db, 'scrape_runs'));
+      const runsDocs = runsSnap.docs;
+      for (let i = 0; i < runsDocs.length; i += 500) {
+        const chunk = runsDocs.slice(i, i + 500);
+        const batch = writeBatch(db);
+        chunk.forEach(d => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      addToast('Se han eliminado todos los enlaces de competencia e historial de precios.', 'success');
+      await cargar();
+    } catch (err) {
+      addToast('Error al vaciar enlaces: ' + err.message, 'error');
+    }
+    setDeletingAll(false);
+    setConfirmDeleteAll(false);
   };
 
   const handleToggleActivo = async (item) => {
@@ -320,7 +374,7 @@ export default function Competencia() {
         let count = 0;
 
         for (const row of rows) {
-          const id_producto = (row.id_producto_propio || row.ID_Producto || row.id_producto || '').trim();
+          const id_producto = (row.id_producto_propio || row.ID_Producto || row.id_producto || row.id_interno || row.id || '').trim();
           const cadena = (row.cadena || row.Cadena || '').trim();
           const marca = (row.marca || row.Marca || '').trim();
           const url = (row.url || row.URL || '').trim();
@@ -329,22 +383,37 @@ export default function Competencia() {
           const concentracion = (row.concentracion || row.Concentracion || '').trim();
           const tamano = (row.tamano || row.Tamano || '').trim();
 
-          if (!id_producto || !cadena || !marca || !url) continue;
+          if (!id_producto || !cadena || !url) continue;
+
+          // Look for existing competitor document for this product ID and chain
+          const existingComp = items.find(c => 
+            c.id_producto_propio === id_producto && 
+            c.cadena.toLowerCase().trim() === cadena.toLowerCase().trim() &&
+            (marca ? (c.marca || '').toLowerCase().trim() === marca.toLowerCase().trim() : true)
+          ) || items.find(c => 
+            c.id_producto_propio === id_producto && 
+            c.cadena.toLowerCase().trim() === cadena.toLowerCase().trim()
+          );
 
           const labPart = laboratorio ? `_${laboratorio}` : '';
-          const docId = `${id_producto}_${cadena}_${marca}${labPart}`.replace(/[\s/\\]+/g, '_');
+          const docId = (row.doc_id || row.id)
+            ? (row.doc_id || row.id).trim()
+            : existingComp 
+              ? existingComp.id 
+              : `${id_producto}_${cadena}_${marca || 'comp'}${labPart}`.replace(/[\s/\\]+/g, '_');
+
           const compRef = doc(db, 'productos_competencia', docId);
 
           batch.set(compRef, {
             id_producto_propio: id_producto,
             cadena,
             tipo: tipo === 'propio' ? 'propio' : 'alternativa',
-            marca,
+            marca: marca || existingComp?.marca || 'Competencia',
             url,
-            activo: row.activo ? (row.activo.toLowerCase() === 'true' || row.activo === '1') : true,
-            laboratorio,
-            concentracion,
-            tamano,
+            activo: row.activo ? (String(row.activo).toLowerCase() === 'true' || String(row.activo) === '1') : true,
+            laboratorio: laboratorio || existingComp?.laboratorio || '',
+            concentracion: concentracion || existingComp?.concentracion || '',
+            tamano: tamano || existingComp?.tamano || '',
           }, { merge: true });
 
           count++;
@@ -471,6 +540,13 @@ export default function Competencia() {
           </p>
         </div>
         <div className="flex gap-2 flex-wrap">
+          <button onClick={() => setConfirmDeleteAll(true)}
+            disabled={deletingAll || items.length === 0}
+            className="text-xs px-4 py-2.5 bg-red-50 hover:bg-red-100 border border-red-200 font-bold text-red-700 rounded-full transition-all flex items-center gap-1.5 shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Eliminar todos los enlaces de competencia e historial">
+            <span className="material-symbols-outlined text-base">delete_sweep</span>
+            <span>{deletingAll ? 'Vaciando...' : 'Vaciar Enlaces'}</span>
+          </button>
           <button onClick={handleExportarEnlaces}
             className="text-xs px-4 py-2.5 bg-white border border-outline-variant hover:bg-surface-low font-bold text-primary rounded-full transition-all flex items-center gap-1.5 shadow-sm"
             title="Exportar enlaces filtrados a archivo CSV">
@@ -848,6 +924,18 @@ export default function Competencia() {
         isDanger={true}
         onConfirm={handleConfirmDelete}
         onCancel={() => setConfirmDelete(null)}
+      />
+
+      {/* Confirm Modal to Delete All Competitor Links and History */}
+      <ConfirmModal
+        isOpen={confirmDeleteAll}
+        title="¿Vaciar Todos los Enlaces de Competencia?"
+        message="¿Estás seguro de que deseas eliminar TODOS los enlaces de competencia vinculados, así como todo el historial de precios acumulado?\n\nEsta acción NO se puede deshacer."
+        confirmText={deletingAll ? "Eliminando..." : "Sí, Vaciar Enlaces"}
+        cancelText="Cancelar"
+        isDanger={true}
+        onConfirm={handleConfirmDeleteAll}
+        onCancel={() => setConfirmDeleteAll(false)}
       />
 
       {/* CSV Mass Upload Competitors Modal */}

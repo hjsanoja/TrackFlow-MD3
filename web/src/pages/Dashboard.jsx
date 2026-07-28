@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from 'react';
-import { collection, query, orderBy, limit, doc, getDoc, writeBatch, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { collection, query, orderBy, limit, doc, getDoc, getDocs, writeBatch, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useBcvRate } from '../hooks/useBcvRate';
 import ProductDetailModal from '../components/ProductDetailModal';
@@ -138,7 +138,7 @@ export default function Dashboard({ user, userDoc }) {
         await batch.commit();
       }
 
-      setUltimaCorrida(null);
+      setLocalUltimaCorrida(null);
       addToast('Historial de precios y análisis de scraper vaciados con éxito.', 'success');
       await cargarDatos();
     } catch (err) {
