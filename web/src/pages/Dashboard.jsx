@@ -1080,7 +1080,7 @@ export default function Dashboard({ user, userDoc }) {
         </div>
       </div>
 
-      {/* Dynamic Generic vs Brand Parity Analysis Card */}
+      {/* Versión 1.2: Gráfico "Análisis de Paridad de Escala Farmacéutica" ocultado temporalmente por solicitud del usuario. Descomentar para Reactivar.
       {analisisMoleculaParidad.length > 0 && (
         <div className="bg-white rounded-3xl border border-outline-variant p-6 shadow-sm space-y-4">
           <div>
@@ -1165,7 +1165,7 @@ export default function Dashboard({ user, userDoc }) {
             })}
           </div>
         </div>
-      )}
+      )} */}
 
       {/* Heatmap Matrix Section */}
       <div className="bg-white rounded-3xl border border-outline-variant shadow-sm overflow-hidden">
