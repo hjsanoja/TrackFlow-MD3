@@ -46,7 +46,7 @@ def fetch_bcv_dolarapi():
 
 
 def update_bcv_rate():
-    """Obtiene la tasa, la guarda en Firestore, devuelve el valor o None."""
+    """Obtiene la tasa, la guarda en Supabase y Firestore, devuelve el valor o None."""
     print("Obteniendo tasa BCV...")
     rate = fetch_bcv_pydolarve()
     if rate is None:
@@ -57,12 +57,33 @@ def update_bcv_rate():
         return None
 
     print(f"  Tasa BCV: Bs {rate:,.4f} / USD")
-    db = get_db()
-    db.collection("bcv_rates").add({
-        "value": rate,
-        "source": "auto",
-        "updated_at": datetime.now(timezone.utc),
-    })
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 1. Guardar en Supabase
+    try:
+        from supabase_client import is_supabase_configured, insert
+        if is_supabase_configured():
+            insert("bcv_rates", [{
+                "value": rate,
+                "source": "auto",
+                "updated_at": now_iso
+            }])
+            print("  ✅ Tasa BCV guardada en Supabase")
+    except Exception as e:
+        print(f"  Aviso Supabase BCV: {e}")
+
+    # 2. Guardar en Firestore
+    try:
+        db = get_db()
+        db.collection("bcv_rates").add({
+            "value": rate,
+            "source": "auto",
+            "updated_at": datetime.now(timezone.utc),
+        })
+        print("  ✅ Tasa BCV guardada en Firestore")
+    except Exception as e:
+        print(f"  Aviso Firestore BCV: {e}")
+
     return rate
 
 
