@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { collection, getDocs, query, orderBy, limit } from 'firebase/firestore';
 import { db } from '../firebase';
+import { supabase } from '../supabase';
 
 const DataContext = createContext(null);
 
@@ -22,6 +23,96 @@ export function DataProvider({ children, user }) {
     } else {
       setIsRefreshing(true);
     }
+
+    const hasSupabase = Boolean(import.meta.env.VITE_SUPABASE_URL);
+
+    if (hasSupabase) {
+      try {
+        const [
+          { data: pData, error: pErr },
+          { data: pcData, error: pcErr },
+          { data: cData, error: cErr },
+          { data: hData, error: hErr },
+          { data: rData, error: rErr },
+          { data: bData, error: bErr },
+          { data: uData, error: uErr }
+        ] = await Promise.all([
+          supabase.from('productos').select('*'),
+          supabase.from('productos_competencia').select('*'),
+          supabase.from('cadenas').select('*'),
+          supabase.from('historico_precios').select('*').order('scraped_at', { ascending: false }).limit(1500),
+          supabase.from('scrape_runs').select('*').order('started_at', { ascending: false }).limit(1),
+          supabase.from('bcv_rates').select('*').order('updated_at', { ascending: true }),
+          supabase.from('usuarios').select('*')
+        ]);
+
+        if (!pErr && pData) {
+          const prods = [...pData].sort((a, b) => (a.id_interno || '').localeCompare(b.id_interno || ''));
+          setProductos(prods);
+
+          if (pcData) setProductosCompetencia(pcData);
+
+          if (cData) {
+            const cSorted = [...cData].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+            setCadenas(cSorted);
+          }
+
+          if (hData) {
+            setHistoricoPrecios(hData.map(d => ({
+              ...d,
+              scraped_at: d.scraped_at ? new Date(d.scraped_at) : null
+            })));
+          }
+
+          if (rData && rData.length > 0) {
+            setUltimaCorrida({
+              ...rData[0],
+              started_at: rData[0].started_at ? new Date(rData[0].started_at) : null
+            });
+          }
+
+          if (bData) {
+            const rawRates = bData.map(d => {
+              const dateObj = d.updated_at ? new Date(d.updated_at) : new Date();
+              return {
+                dayKey: dateObj.toLocaleDateString('es-VE', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+                fecha: dateObj.toLocaleDateString('es-VE', { month: 'short', day: 'numeric' }) || '—',
+                valor: d.value || d.valor,
+                rawDate: dateObj
+              };
+            });
+
+            const ratesByDay = {};
+            rawRates.forEach(rate => {
+              const existing = ratesByDay[rate.dayKey];
+              if (!existing || rate.rawDate > existing.rawDate) {
+                ratesByDay[rate.dayKey] = rate;
+              }
+            });
+
+            const uniqueDaysRates = Object.values(ratesByDay)
+              .sort((a, b) => a.rawDate - b.rawDate)
+              .slice(-10);
+
+            setBcvRates(uniqueDaysRates.map(({ dayKey, fecha, valor }) => ({ dayKey, fecha, valor })));
+          }
+
+          if (uData) {
+            const uSorted = [...uData].sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+            setUsuarios(uSorted);
+          }
+
+          setIsLoadedOnce(true);
+          setLoadingInitial(false);
+          setIsRefreshing(false);
+          return;
+        }
+      } catch (sbErr) {
+        console.warn('Supabase no devolvió datos o no está migrado aún, cambiando a Firebase:', sbErr);
+      }
+    }
+
+    // Fallback Firebase
     try {
       const [pSnap, pcSnap, cSnap, hSnap, rSnap, bSnap, uSnap] = await Promise.all([
         getDocs(collection(db, 'productos')),

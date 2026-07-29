@@ -104,9 +104,23 @@ def is_usd_text(text: str) -> bool:
 def fetch_bcv_rate_once() -> float:
     """
     Obtiene la tasa oficial del BCV una sola vez al inicio del programa.
-    Evita lecturas innecesarias a Firestore o APIs durante la ejecución masiva.
+    Consulta Supabase primeramente, luego Firestore, luego DolarAPI.
     """
     print("[BCV] Cargando tasa oficial...", flush=True)
+    
+    # 1. Intentar cargar desde Supabase
+    try:
+        from supabase_client import is_supabase_configured, select
+        if is_supabase_configured():
+            res = select("bcv_rates", "order=updated_at.desc&limit=1")
+            if res and len(res) > 0 and res[0].get("value"):
+                rate = float(res[0]["value"])
+                print(f"[BCV] Tasa cargada desde Supabase: Bs {rate:,.2f}", flush=True)
+                return rate
+    except Exception as e:
+        print(f"[BCV] Aviso Supabase: {e}", flush=True)
+
+    # 2. Intentar cargar desde Firestore
     try:
         from firebase_client import get_db
         db = get_db()
@@ -116,8 +130,9 @@ def fetch_bcv_rate_once() -> float:
             print(f"[BCV] Tasa cargada desde Firestore: Bs {rate:,.2f}", flush=True)
             return rate
     except Exception as e:
-        print(f"[BCV] Aviso: No se pudo conectar a Firestore para BCV ({e})", flush=True)
+        print(f"[BCV] Aviso Firestore: {e}", flush=True)
 
+    # 3. Fallback a DolarAPI
     try:
         url = "https://ve.dolarapi.com/v1/dolares/oficial"
         req = urllib.request.Request(url, headers={"User-Agent": "TrackFlow/1.0"})
@@ -129,15 +144,29 @@ def fetch_bcv_rate_once() -> float:
                 print(f"[BCV] Tasa obtenida desde DolarAPI: Bs {rate:,.2f}", flush=True)
                 return rate
     except Exception as e:
-        print(f"[BCV] Aviso: Falló DolarAPI ({e})", flush=True)
+        print(f"[BCV] Aviso DolarAPI: {e}", flush=True)
 
     fallback = 44.5
     print(f"[BCV] Usando tasa hardcoded de seguridad: Bs {fallback:,.2f}", flush=True)
     return fallback
 
 
-def cargar_filas_de_firestore():
-    """Lee productos_competencia desde Firestore."""
+def cargar_filas_de_db():
+    """Lee productos_competencia desde Supabase o Firestore."""
+    # 1. Probar Supabase
+    try:
+        from supabase_client import is_supabase_configured, select
+        if is_supabase_configured():
+            filas = select("productos_competencia", "select=*")
+            if filas:
+                for f in filas:
+                    f["_doc_id"] = str(f.get("id") or f.get("_doc_id") or "")
+                print(f"Cargadas {len(filas)} filas desde Supabase", flush=True)
+                return filas
+    except Exception as e:
+        print(f"No se pudo cargar desde Supabase: {e}", flush=True)
+
+    # 2. Probar Firestore
     try:
         from firebase_client import get_db
         db = get_db()
@@ -522,8 +551,8 @@ async def main_async():
     # 1. Cargar Tasa Oficial BCV una sola vez
     bcv_rate = fetch_bcv_rate_once()
 
-    # 2. Cargar lista de productos desde Firestore o CSV local
-    filas_todas = cargar_filas_de_firestore() or cargar_filas_de_csv()
+    # 2. Cargar lista de productos desde Supabase/Firestore o CSV local
+    filas_todas = cargar_filas_de_db() or cargar_filas_de_csv()
     if not filas_todas:
         print("ERROR: No se encontraron filas de productos para procesar.")
         sys.exit(1)

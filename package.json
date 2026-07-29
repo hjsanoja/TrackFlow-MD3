@@ -8,5 +8,8 @@
     "dev": "npm run dev --workspace=web",
     "build": "npm run build --workspace=web && rm -rf dist && cp -r web/dist dist",
     "lint": "echo 'No lint script configured'"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.111.0"
   }
 }
