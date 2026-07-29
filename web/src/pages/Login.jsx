@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../firebase';
+import { supabase } from '../supabase';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -12,6 +13,27 @@ export default function Login() {
     e.preventDefault();
     setError('');
     setLoading(true);
+
+    const hasSupabase = Boolean(import.meta.env.VITE_SUPABASE_URL);
+
+    // 1. Intentar inicio de sesión con Supabase Auth si está configurado
+    if (hasSupabase) {
+      try {
+        const { data, error: sbError } = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password: password,
+        });
+
+        if (!sbError && data?.user) {
+          setLoading(false);
+          return;
+        }
+      } catch (err) {
+        console.warn('Fallback a Firebase Auth por error en Supabase Auth:', err?.message);
+      }
+    }
+
+    // 2. Fallback a Firebase Auth
     try {
       await signInWithEmailAndPassword(auth, email, password);
     } catch (err) {

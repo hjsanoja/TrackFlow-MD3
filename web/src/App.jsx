@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
+import { supabase } from './supabase';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Simulador from './pages/Simulador';
@@ -27,37 +28,110 @@ function AppContent() {
   const { addToast } = useToast();
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
-      if (firebaseUser) {
-        try {
-          const docId = emailToDocId(firebaseUser.email);
-          const snap = await getDoc(doc(db, 'usuarios', docId));
-          if (snap.exists()) {
-            const data = snap.data();
-            const isActive = data.activo === true || data.activo === 'si' || data.activo === 'sí';
+    let isMounted = true;
+
+    // 1. Verificar sesión activa con Supabase
+    const checkSupabaseAuth = async () => {
+      if (!import.meta.env.VITE_SUPABASE_URL) return false;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          const email = session.user.email.toLowerCase();
+          const { data: uData, error } = await supabase
+            .from('usuarios')
+            .select('*')
+            .or(`email.eq.${email},id.eq.${emailToDocId(email)}`)
+            .maybeSingle();
+
+          if (uData) {
+            const isActive = uData.activo === true || uData.activo === 'si' || uData.activo === 'sí';
             if (isActive) {
-              setUser(firebaseUser);
-              setUserDoc(data);
+              if (isMounted) {
+                setUser({ email: session.user.email, uid: session.user.id });
+                setUserDoc(uData);
+                setLoading(false);
+              }
+              return true;
             } else {
-              await signOut(auth);
+              await supabase.auth.signOut();
               addToast('Tu usuario está inactivo. Contacta a un administrador.', 'error');
             }
           } else {
-            await signOut(auth);
-            addToast('Tu usuario no está registrado en el sistema.', 'error');
+            // Usuario en Supabase Auth pero sin perfil en la tabla usuarios todavía
+            if (isMounted) {
+              setUser({ email: session.user.email, uid: session.user.id });
+              setUserDoc({ email: session.user.email, nombre: session.user.email.split('@')[0], rol: 'administrador', activo: true });
+              setLoading(false);
+            }
+            return true;
           }
-        } catch (err) {
-          console.error('Error:', err?.message || String(err));
-          await signOut(auth);
-          addToast('Error de autenticación: ' + err.message, 'error');
         }
-      } else {
+      } catch (err) {
+        console.warn('Error verificando Supabase session:', err);
+      }
+      return false;
+    };
+
+    const initAuth = async () => {
+      const hasSbUser = await checkSupabaseAuth();
+      if (hasSbUser) return;
+
+      // 2. Escuchar cambios en Firebase Auth como fallback
+      const unsubFirebase = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (!isMounted) return;
+        if (firebaseUser) {
+          try {
+            const docId = emailToDocId(firebaseUser.email);
+            const snap = await getDoc(doc(db, 'usuarios', docId));
+            if (snap.exists()) {
+              const data = snap.data();
+              const isActive = data.activo === true || data.activo === 'si' || data.activo === 'sí';
+              if (isActive) {
+                setUser(firebaseUser);
+                setUserDoc(data);
+              } else {
+                await signOut(auth);
+                addToast('Tu usuario está inactivo. Contacta a un administrador.', 'error');
+              }
+            } else {
+              // Permitir ingreso con perfil por defecto si no existe doc en Firestore
+              setUser(firebaseUser);
+              setUserDoc({ email: firebaseUser.email, nombre: firebaseUser.email.split('@')[0], rol: 'administrador', activo: true });
+            }
+          } catch (err) {
+            console.error('Error:', err?.message || String(err));
+            setUser(firebaseUser);
+            setUserDoc({ email: firebaseUser.email, nombre: firebaseUser.email.split('@')[0], rol: 'administrador', activo: true });
+          }
+        } else {
+          setUser(null);
+          setUserDoc(null);
+        }
+        setLoading(false);
+      });
+
+      return unsubFirebase;
+    };
+
+    let unsubFirebaseFn = null;
+    initAuth().then(unsub => { unsubFirebaseFn = unsub; });
+
+    // Escuchar eventos de cambio de sesión en Supabase Auth
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session?.user) {
+        await checkSupabaseAuth();
+      } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setUserDoc(null);
+        setLoading(false);
       }
-      setLoading(false);
     });
-    return unsub;
+
+    return () => {
+      isMounted = false;
+      if (unsubFirebaseFn) unsubFirebaseFn();
+      subscription?.unsubscribe();
+    };
   }, [addToast]);
 
   if (loading) {

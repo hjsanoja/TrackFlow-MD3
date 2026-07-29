@@ -1,12 +1,20 @@
 import { NavLink } from 'react-router-dom';
 import { signOut } from 'firebase/auth';
 import { auth } from '../firebase';
+import { supabase } from '../supabase';
 import { useData } from '../context/DataContext';
 
 export default function Layout({ user, userDoc, children }) {
   const { isRefreshing, refreshData } = useData();
   const isAdmin = userDoc?.rol === 'administrador';
-  const handleLogout = () => signOut(auth);
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {}
+    try {
+      await signOut(auth);
+    } catch (e) {}
+  };
 
   // Versión 1.2: Menús 'Análisis' y 'Hallazgos' ocultados temporalmente por solicitud del usuario.
   // Para reactivarlos en el futuro, descomentar las siguientes líneas:
@@ -118,7 +126,7 @@ export default function Layout({ user, userDoc, children }) {
           <div className="flex items-center gap-2">
             <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
             <span className="text-xs font-mono font-semibold text-on-surface-variant">
-              Conexión Firestore Caché Activa
+              Conexión Supabase DB Activa
             </span>
           </div>
 
