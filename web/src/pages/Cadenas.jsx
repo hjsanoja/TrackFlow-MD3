@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import { doc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { supabase } from '../supabase';
 import ConfirmModal from '../components/ConfirmModal';
 import { useToast } from '../context/ToastContext';
 import { useData } from '../context/DataContext';
@@ -49,12 +50,29 @@ export default function Cadenas() {
       if (isNew && cadenas.some(c => c.id === docId)) {
         throw new Error('Ya existe una cadena con ese nombre');
       }
-      await setDoc(doc(db, 'cadenas', docId), {
-        nombre: data.nombre.trim(),
-        website: data.website.trim(),
-        scraper_modulo: data.scraper_modulo,
-        activo: data.activo,
-      });
+
+      if (import.meta.env.VITE_SUPABASE_URL) {
+        await supabase.from('cadenas').upsert({
+          id: docId,
+          _doc_id: docId,
+          nombre: data.nombre.trim(),
+          website: data.website.trim(),
+          scraper_modulo: data.scraper_modulo,
+          activo: data.activo,
+        });
+      }
+
+      try {
+        await setDoc(doc(db, 'cadenas', docId), {
+          nombre: data.nombre.trim(),
+          website: data.website.trim(),
+          scraper_modulo: data.scraper_modulo,
+          activo: data.activo,
+        });
+      } catch (fbErr) {
+        console.warn('Fallback Firebase warning:', fbErr?.message);
+      }
+
       addToast(isNew ? 'Cadena creada con éxito' : 'Cambios guardados con éxito', 'success');
       setEditing(null);
       await cargar();
@@ -72,7 +90,15 @@ export default function Cadenas() {
     const cadena = confirmDelete;
     setConfirmDelete(null);
     try {
-      await deleteDoc(doc(db, 'cadenas', cadena.id));
+      if (import.meta.env.VITE_SUPABASE_URL) {
+        await supabase.from('cadenas').delete().eq('id', cadena.id);
+      }
+      try {
+        await deleteDoc(doc(db, 'cadenas', cadena.id));
+      } catch (fbErr) {
+        console.warn('Fallback Firebase warning:', fbErr?.message);
+      }
+
       addToast('Cadena eliminada con éxito', 'success');
       await cargar();
     } catch (err) {
@@ -82,9 +108,17 @@ export default function Cadenas() {
 
   const handleToggleActivo = async (cadena) => {
     try {
-      await setDoc(doc(db, 'cadenas', cadena.id), {
-        activo: !cadena.activo,
-      }, { merge: true });
+      if (import.meta.env.VITE_SUPABASE_URL) {
+        await supabase.from('cadenas').update({ activo: !cadena.activo }).eq('id', cadena.id);
+      }
+      try {
+        await setDoc(doc(db, 'cadenas', cadena.id), {
+          activo: !cadena.activo,
+        }, { merge: true });
+      } catch (fbErr) {
+        console.warn('Fallback Firebase warning:', fbErr?.message);
+      }
+
       await cargar();
     } catch (err) {
       addToast(err.message, 'error');
